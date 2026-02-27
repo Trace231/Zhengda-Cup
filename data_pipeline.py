@@ -5,8 +5,23 @@ Z世代天津线下观演调研 — 合成问卷数据生成脚本
     pip install openai pandas python-docx
 
 运行示例：
-    # 最简运行（需已设置环境变量 DEEPSEEK_API_KEY）
+    # 最简运行（需已设置环境变量 DEEPSEEK_API_KEY；默认先 LLM 重写人设再填问卷）
     python data_pipeline.py --n 100
+
+    # 生成 700 份任意城市样本（可先删除或覆盖旧 CSV）
+    python data_pipeline.py --n 700 --output synthetic_survey_data.csv
+
+    # 仅天津样本：常住地限死在天津，输出到单独文件
+    python data_pipeline.py --n 300 --tianjin-only --output tianjin_only_survey_data.csv
+
+    # 500 份样本，约 35%% 天津、65%% 非天津（可加 --cluster-sampling 或 --seed 复现）
+    python data_pipeline.py --n 500 --tianjin-ratio 0.35 --output survey_500.csv
+
+    # 整群抽样：天津从全市 16 区中抽 6 区，非天津从全国省中抽 6 省（可复现：加 --seed 42）
+    python data_pipeline.py --n 700 --cluster-sampling --tianjin-clusters 6 --province-clusters 6
+
+    # 关闭人设重写，直接用模板填问卷
+    python data_pipeline.py --n 100 --no-rewrite-persona
 
     # 完整参数运行
     python data_pipeline.py \\
@@ -30,6 +45,8 @@ from typing import Optional
 import pandas as pd
 from openai import OpenAI
 
+from province_cities_data import ALL_PROVINCE_TO_CITIES, JINGJINJI_PROVINCES, MID_RANGE_PROVINCES
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -45,11 +62,12 @@ logger = logging.getLogger(__name__)
 PRIOR_GENDER = [("女", 0.65), ("男", 0.35)]
 
 PRIOR_AGE_OCC = [
-    ("17-21岁学生",       0.35),
-    ("22-26岁职场新人",   0.45),
-    ("27-31岁资深职场人", 0.20),
+    ("17-21岁", 0.35),
+    ("22-26岁", 0.45),
+    ("27-31岁", 0.20),
 ]
 
+# 收入与城市/常住地相关，不再用单一先验；见 INCOME_BY_RESIDENCE（在确定 residence 后抽样）
 PRIOR_INCOME = [
     ("1000元及以下",  0.10),
     ("1001-3000元",  0.35),
@@ -58,22 +76,50 @@ PRIOR_INCOME = [
     ("10000元以上",  0.10),
 ]
 
-PRIOR_RESIDENCE = [
-    ("天津本地",     0.30),
-    ("京津冀近途",   0.45),
-    ("其他省份远途", 0.25),
-]
+# 收入 × 常住地类型：一线/直辖市偏高，远途省份偏低
+INCOME_BY_RESIDENCE: dict[str, list[tuple[str, float]]] = {
+    "天津本地": [
+        ("1000元及以下",  0.06),
+        ("1001-3000元",  0.28),
+        ("3001-6000元",  0.28),
+        ("6001-10000元", 0.24),
+        ("10000元以上",  0.14),
+    ],
+    "京津冀近途": [
+        ("1000元及以下",  0.08),
+        ("1001-3000元",  0.32),
+        ("3001-6000元",  0.26),
+        ("6001-10000元", 0.22),
+        ("10000元以上",  0.12),
+    ],
+    "中程较近": [
+        ("1000元及以下",  0.10),
+        ("1001-3000元",  0.36),
+        ("3001-6000元",  0.28),
+        ("6001-10000元", 0.18),
+        ("10000元以上",  0.08),
+    ],
+    "其他省份远途": [
+        ("1000元及以下",  0.14),
+        ("1001-3000元",  0.40),
+        ("3001-6000元",  0.26),
+        ("6001-10000元", 0.14),
+        ("10000元以上",  0.06),
+    ],
+}
+
+# 常住地不再使用先验：天津 only 时仅天津；非天津 only 时按「抽中的群」随机抽样（整群时为 6 天津区 + 6 省共 7 群等权，非整群时为三档等权）
 
 
 # ============================================================
 # § 内在条件概率 P(I|E)
 # ============================================================
 
-# 社交驱动 × 年龄职业
+# 社交驱动 × 年龄
 SOCIAL_DRIVE_BY_AGE: dict[str, list] = {
-    "17-21岁学生":       [("饭圈打卡", 0.50), ("精致出片", 0.35), ("解压放松", 0.15)],
-    "22-26岁职场新人":   [("饭圈打卡", 0.30), ("精致出片", 0.40), ("解压放松", 0.30)],
-    "27-31岁资深职场人": [("饭圈打卡", 0.10), ("精致出片", 0.20), ("解压放松", 0.70)],
+    "17-21岁": [("饭圈打卡", 0.50), ("精致出片", 0.35), ("解压放松", 0.15)],
+    "22-26岁": [("饭圈打卡", 0.30), ("精致出片", 0.40), ("解压放松", 0.30)],
+    "27-31岁": [("饭圈打卡", 0.10), ("精致出片", 0.20), ("解压放松", 0.70)],
 }
 
 # 消费偏好 × 收入
@@ -94,26 +140,29 @@ INTERACTION_BY_GENDER: dict[str, list] = {
 
 def _get_tourism_energy_probs(residence: str, age_occ: str) -> list:
     """
-    文旅精力联合条件概率：P(精力 | 常住地, 年龄职业)
-    远途 + 资深职场人 → 精力匮乏概率最高（85%），
-    本地/近途 + 学生    → 精力充沛概率最高（85%）。
+    文旅精力联合条件概率：P(精力 | 常住地, 年龄)
+    四档距离：天津本地 / 京津冀近途 / 中程较近 / 其他省份远途；远途+大龄→精力匮乏最高，本地/近途+年轻→精力充沛最高。
     """
-    is_remote = (residence == "其他省份远途")
-    if "学生" in age_occ:
-        if is_remote:
+    is_far = (residence == "其他省份远途")
+    is_mid = (residence == "中程较近")
+    if age_occ == "17-21岁":
+        if is_far:
             return [("精力充沛", 0.55), ("精力一般", 0.30), ("精力匮乏", 0.15)]
-        else:
-            return [("精力充沛", 0.85), ("精力一般", 0.10), ("精力匮乏", 0.05)]
-    elif "职场新人" in age_occ:
-        if is_remote:
+        if is_mid:
+            return [("精力充沛", 0.70), ("精力一般", 0.22), ("精力匮乏", 0.08)]
+        return [("精力充沛", 0.85), ("精力一般", 0.10), ("精力匮乏", 0.05)]
+    if age_occ == "22-26岁":
+        if is_far:
             return [("精力充沛", 0.10), ("精力一般", 0.20), ("精力匮乏", 0.70)]
-        else:
-            return [("精力充沛", 0.50), ("精力一般", 0.35), ("精力匮乏", 0.15)]
-    else:  # 27-31岁资深职场人
-        if is_remote:
-            return [("精力充沛", 0.05), ("精力一般", 0.10), ("精力匮乏", 0.85)]
-        else:
-            return [("精力充沛", 0.30), ("精力一般", 0.40), ("精力匮乏", 0.30)]
+        if is_mid:
+            return [("精力充沛", 0.28), ("精力一般", 0.40), ("精力匮乏", 0.32)]
+        return [("精力充沛", 0.50), ("精力一般", 0.35), ("精力匮乏", 0.15)]
+    # 27-31岁
+    if is_far:
+        return [("精力充沛", 0.05), ("精力一般", 0.10), ("精力匮乏", 0.85)]
+    if is_mid:
+        return [("精力充沛", 0.15), ("精力一般", 0.35), ("精力匮乏", 0.50)]
+    return [("精力充沛", 0.30), ("精力一般", 0.40), ("精力匮乏", 0.30)]
 
 
 def _weighted_choice(pairs: list) -> str:
@@ -126,7 +175,7 @@ def _weighted_choice(pairs: list) -> str:
 # § 模块一：生成用户画像字典
 # ============================================================
 
-# 常住地到具体城市/区的映射候选池
+# 常住地到具体城市/区的映射候选池（默认：非整群抽样时使用）
 _RESIDENCE_POOL: dict[str, list] = {
     "天津本地": [
         "天津市南开区", "天津市河西区", "天津市河东区",
@@ -136,38 +185,121 @@ _RESIDENCE_POOL: dict[str, list] = {
         "北京市朝阳区", "北京市海淀区", "北京市丰台区",
         "河北省廊坊市", "河北省保定市", "河北省石家庄市",
     ],
+    "中程较近": [
+        "山东省济南市", "山东省青岛市", "河南省郑州市", "山西省太原市",
+        "辽宁省沈阳市", "辽宁省大连市", "江苏省南京市", "安徽省合肥市",
+    ],
     "其他省份远途": [
         "上海市浦东新区", "广东省广州市", "浙江省杭州市",
-        "四川省成都市", "山东省济南市", "湖北省武汉市", "江苏省南京市",
+        "四川省成都市", "湖北省武汉市", "陕西省西安市", "云南省昆明市",
     ],
 }
 
-# 年龄职业段到具体职业的细化映射
+# 整群抽样用：天津为「全市所有区」抽 6 区；非天津为「全国所有省」抽 6 省（省内市完整列表任选）
+# 天津市全部 16 个区
+TIANJIN_ALL_DISTRICTS: list[str] = [
+    "天津市和平区", "天津市河东区", "天津市河西区", "天津市南开区",
+    "天津市河北区", "天津市红桥区", "天津市东丽区", "天津市西青区",
+    "天津市津南区", "天津市北辰区", "天津市武清区", "天津市宝坻区",
+    "天津市滨海新区", "天津市静海区", "天津市宁河区", "天津市蓟州区",
+]
+# 全国省份完整地级列表（不含天津）见 province_cities_data.py，已从该模块导入 ALL_PROVINCE_TO_CITIES、JINGJINJI_PROVINCES
+
+# 单次运行中若启用整群抽样，用此池覆盖默认池（由 main 在启动时写入）
+_RESIDENCE_POOL_RUN: dict[str, list] | None = None
+# 整群抽样时的「按省/区」群列表：[(residence_type, [区/市...]), ...]，共 1(天津)+6(省)=7 群，用于非天津 only 时等权抽群再抽区/市
+_CLUSTER_RUN: list[tuple[str, list[str]]] | None = None
+
+# 职业选项全集（问卷 Q11_3 口径）；各年龄段均可覆盖，仅概率不同
+_OCCUPATION_OPTIONS: list[str] = [
+    "高中生",
+    "本科生/专科生",
+    "研究生",
+    "企业/单位在职人员（工作1-3年）",
+    "企业/单位在职人员（工作4-8年）",
+    "自由职业者",
+    "待业/备考",
+]
+
+# 各年龄下职业分布概率（参考：16-24岁城镇在校生约六成+；17-21 以学生为主，22-26 以职场新人为主，27-31 以资深在职为主）
 _OCCUPATION_POOL: dict[str, tuple[list, list]] = {
-    "17-21岁学生": (
-        ["高中生", "本科生/专科生", "研究生"],
-        [0.20, 0.65, 0.15],
+    "17-21岁": (
+        _OCCUPATION_OPTIONS,
+        [0.18, 0.52, 0.08, 0.12, 0.02, 0.05, 0.03],  # 学生为主，少量在职/待业
     ),
-    "22-26岁职场新人": (
-        ["企业/单位在职人员（工作1-3年）", "自由职业者", "待业/备考"],
-        [0.70, 0.20, 0.10],
+    "22-26岁": (
+        _OCCUPATION_OPTIONS,
+        [0.01, 0.12, 0.09, 0.52, 0.10, 0.11, 0.05],  # 在职1-3年为主，含在读/自由职业/待业
     ),
-    "27-31岁资深职场人": (
-        ["企业/单位在职人员（工作4-8年）", "自由职业者"],
-        [0.80, 0.20],
+    "27-31岁": (
+        _OCCUPATION_OPTIONS,
+        [0.00, 0.02, 0.02, 0.14, 0.58, 0.19, 0.05],  # 在职4-8年为主，自由职业次之
     ),
 }
 
+# 仅年龄区间（问卷展示用，不含「学生/职场新人」等提示词）
 _AGE_RANGE_LABEL: dict[str, str] = {
-    "17-21岁学生":       "17-21岁（2005-2009年出生）",
-    "22-26岁职场新人":   "22-26岁（2000-2004年出生）",
-    "27-31岁资深职场人": "27-31岁（1995-1999年出生）",
+    "17-21岁": "17-21岁（2005-2009年出生）",
+    "22-26岁": "22-26岁（2000-2004年出生）",
+    "27-31岁": "27-31岁（1995-1999年出生）",
 }
 
 
-def generate_persona() -> dict:
+def build_cluster_residence_pool(
+    n_tianjin_clusters: int = 6,
+    n_province_clusters: int = 6,
+) -> tuple[dict[str, list[str]], list[tuple[str, list[str]]]]:
+    """
+    整群抽样：天津从全市所有区中抽 6 区；非天津从全国所有省中抽 6 省。
+    - 天津 only 时：仅从抽中的 6 个区中随机抽（用返回的 pool）。
+    - 非天津 only 时：按「抽中的 7 群」等权抽样——先等权抽一个群（1 天津 + 6 省），再在该群内随机抽区/市。
+
+    Returns
+    -------
+    pool : dict
+        四档：天津本地 / 京津冀近途 / 中程较近 / 其他省份远途
+    cluster_list : list of (residence_type, list of 区/市)
+        共 7 个元素：1 天津 + 6 省，每省按距离归为 京津冀/中程/远途
+    """
+    k_t = min(n_tianjin_clusters, len(TIANJIN_ALL_DISTRICTS))
+    k_p = min(n_province_clusters, len(ALL_PROVINCE_TO_CITIES))
+    sampled_tianjin = random.sample(TIANJIN_ALL_DISTRICTS, k_t)
+    all_provinces = list(ALL_PROVINCE_TO_CITIES.keys())
+    sampled_provinces = random.sample(all_provinces, k_p)
+
+    jingjinji_cities = [c for p in sampled_provinces if p in JINGJINJI_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
+    mid_cities = [c for p in sampled_provinces if p in MID_RANGE_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
+    far_cities = [c for p in sampled_provinces if p not in JINGJINJI_PROVINCES and p not in MID_RANGE_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
+    if not jingjinji_cities:
+        jingjinji_cities = [c for p in JINGJINJI_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
+
+    pool = {
+        "天津本地": sampled_tianjin,
+        "京津冀近途": jingjinji_cities,
+        "中程较近": mid_cities,
+        "其他省份远途": far_cities,
+    }
+    # 按省/区建 7 群，每省归为 京津冀近途 / 中程较近 / 其他省份远途 之一
+    cluster_list: list[tuple[str, list[str]]] = [("天津本地", sampled_tianjin)]
+    for p in sampled_provinces:
+        if p in JINGJINJI_PROVINCES:
+            res_type = "京津冀近途"
+        elif p in MID_RANGE_PROVINCES:
+            res_type = "中程较近"
+        else:
+            res_type = "其他省份远途"
+        cluster_list.append((res_type, list(ALL_PROVINCE_TO_CITIES[p])))
+    return pool, cluster_list
+
+
+def generate_persona(tianjin_only: bool = False) -> dict:
     """
     基于贝叶斯先验 + 条件概率采样，生成一份逻辑自洽的用户画像字典。
+
+    Parameters
+    ----------
+    tianjin_only : bool, default False
+        若为 True，常住地强制为天津本地（仅从 _RESIDENCE_POOL["天津本地"] 抽样），用于生成「仅天津样本」。
 
     Returns
     -------
@@ -175,11 +307,24 @@ def generate_persona() -> dict:
         包含外在人口属性（gender / age_occ_group / occupation / income / residence_*）
         与内在心理动机（social_drive / consumption_pref / interaction_obsession / tourism_energy）。
     """
-    # --- 外在属性：独立先验采样 ---
+    # --- 外在属性：先验与常住地 ---
     gender    = _weighted_choice(PRIOR_GENDER)
     age_occ   = _weighted_choice(PRIOR_AGE_OCC)
-    income    = _weighted_choice(PRIOR_INCOME)
-    residence = _weighted_choice(PRIOR_RESIDENCE)
+    pool = _RESIDENCE_POOL_RUN or _RESIDENCE_POOL
+    if tianjin_only:
+        residence = "天津本地"
+        residence_detail = random.choice(pool["天津本地"])
+    elif _CLUSTER_RUN is not None:
+        # 非天津 only 且整群抽样：按抽中的 7 群（1 天津 + 6 省）等权抽一个群，再在该群内随机抽区/市
+        res_type, cluster_cities = random.choice(_CLUSTER_RUN)
+        residence = res_type
+        residence_detail = random.choice(cluster_cities)
+    else:
+        # 非天津 only 且未整群：四档等权抽一档，再在该档内随机抽
+        residence = random.choice(["天津本地", "京津冀近途", "中程较近", "其他省份远途"])
+        residence_detail = random.choice(pool[residence])
+    # 收入与城市相关：按常住地类型抽样
+    income = _weighted_choice(INCOME_BY_RESIDENCE[residence])
 
     # --- 内在属性：条件采样 ---
     social_drive         = _weighted_choice(SOCIAL_DRIVE_BY_AGE[age_occ])
@@ -198,7 +343,7 @@ def generate_persona() -> dict:
         "occupation":           occupation,
         "income":               income,
         "residence_type":       residence,
-        "residence_detail":     random.choice(_RESIDENCE_POOL[residence]),
+        "residence_detail":     residence_detail,
         "social_drive":         social_drive,
         "consumption_pref":     consumption_pref,
         "interaction_obsession": interaction_obsession,
@@ -231,12 +376,22 @@ _ENERGY_DESC = {
 }
 
 
-def build_system_prompt(persona: dict) -> str:
-    """
-    将画像字典转化为极具代入感的角色扮演指令，
-    让 LLM 以该人设的逻辑和情感填写问卷。
-    """
-    prompt = f"""你是一名{persona['gender']}生，年龄段为{persona['age_range']}，
+# 固定尾部：角色扮演要求 + 输出格式（与是否重写人设无关）
+_SYSTEM_PROMPT_TAIL = """
+【角色扮演要求】
+请完全代入上述人设，以第一人称视角，基于你的收入水平、生活状态和心理动机，
+真实填写以下"Z世代天津线下观演调研"问卷。你的回答必须与人设逻辑高度自洽，
+不可与收入层级、职业现实和核心动机产生明显矛盾。
+特别地，「情感体验动机」相关题目（亲临现场的满足感、临场感与真实感、释放压力与情绪充电）
+测量的是同一维度，请保持态度一致，均围绕"现场观演带来的情感价值"在 1–5 之间给出连贯评分。
+
+【输出格式要求】
+严格输出一个合法的 JSON 对象，键名与题号完全一致，不得在 JSON 之外输出任何文字或解释。"""
+
+
+def _get_persona_description_only(persona: dict) -> str:
+    """仅返回人设描述正文（供 LLM 重写用），不含角色扮演要求与输出格式。"""
+    return f"""你是一名{persona['gender']}生，年龄段为{persona['age_range']}，
 职业是{persona['occupation']}，月可支配收入为{persona['income']}，
 常住地为{persona['residence_detail']}（属于"{persona['residence_type']}"群体）。
 
@@ -244,18 +399,87 @@ def build_system_prompt(persona: dict) -> str:
 - 社交驱动类型：{_SOCIAL_DRIVE_DESC[persona['social_drive']]}
 - 消费偏好类型：{_CONSUMPTION_DESC[persona['consumption_pref']]}
 - 互动执念程度：{_INTERACTION_DESC[persona['interaction_obsession']]}
-- 文旅精力状态：{_ENERGY_DESC[persona['tourism_energy']]}
+- 文旅精力状态：{_ENERGY_DESC[persona['tourism_energy']]}"""
 
-【角色扮演要求】
-请完全代入上述人设，以第一人称视角，基于你的收入水平、生活状态和心理动机，
-真实填写以下"Z世代天津线下观演调研"问卷。你的回答必须与人设逻辑高度自洽，
-不可与收入层级、职业现实和核心动机产生明显矛盾。
-特别地，「情感体验动机」相关题目（亲临现场的满足感、临场感与真实感、释放压力与情绪充电）
-测量的是同一维度，请保持态度一致，均围绕“现场观演带来的情感价值”在 1–5 之间给出连贯评分。
 
-【输出格式要求】
-严格输出一个合法的 JSON 对象，键名与题号完全一致，不得在 JSON 之外输出任何文字或解释。"""
-    return prompt.strip()
+def build_system_prompt(persona: dict) -> str:
+    """
+    将画像字典转化为极具代入感的角色扮演指令，
+    让 LLM 以该人设的逻辑和情感填写问卷。
+    """
+    return (_get_persona_description_only(persona) + _SYSTEM_PROMPT_TAIL).strip()
+
+
+def build_system_prompt_from_rewritten(rewritten_persona_text: str) -> str:
+    """
+    用「LLM 重写后的人设正文」组装完整的 system prompt（重写只改表述，不改含义）。
+    """
+    return (rewritten_persona_text.strip() + _SYSTEM_PROMPT_TAIL).strip()
+
+
+# 用于 LLM 重写人设的指令（不改变含义，仅换一种说法，减少模板感）
+REWRITE_PERSONA_INSTRUCTION = """下面是一份「用户画像」的原始描述（用于后续让模型代入该人设填写问卷）。请用 2～4 段自然语言重写这份画像，要求：
+1. 保持所有事实与含义完全不变（性别、年龄、职业、收入、常住地、四项心理动机等）。
+2. 仅换一种说法、换一种口吻或句式，使读起来像另一份对同一人的描述。
+3. 不要增加或删减任何信息，不要改变任何结论（如“节俭”“追求性价比”“渴望互动”等必须保留）。
+4. 直接输出重写后的画像正文，不要输出 JSON，不要加“重写如下”等前缀。"""
+
+# 重写时随机抽取的风格提示，使每次请求略有不同，降低缓存命中导致输出完全一致的概率
+REWRITE_STYLE_HINTS = [
+    "本次重写请偏口语化、像在向朋友介绍自己。",
+    "本次重写请偏书面、像问卷说明里的受访者简介。",
+    "本次重写请偏简短、用短句。",
+    "本次重写请偏细腻、适当展开心理动机。",
+    "本次重写请换一种段落顺序或句式结构。",
+]
+
+
+def rewrite_persona_with_llm(
+    client: OpenAI,
+    persona: dict,
+    model: str = "deepseek-chat",
+    max_retries: int = 3,
+    base_delay: float = 3.0,
+) -> Optional[str]:
+    """
+    用 LLM 将当前人设描述重写为同义不同表述，减少固定模板感，便于填答时同一类型下作答更分散。
+    每次请求加入随机风格提示与请求标识，降低缓存命中导致重写完全一致的概率。
+    """
+    original_text = _get_persona_description_only(persona)
+    style_hint = random.choice(REWRITE_STYLE_HINTS)
+    # 请求标识使 user 内容每次不同，减少 CDN/API 缓存返回相同结果的可能
+    request_id = f"{random.randint(10000, 99999)}"
+    user_content = f"{REWRITE_PERSONA_INSTRUCTION}\n\n【补充】{style_hint}\n\n---\n请重写以下画像：\n\n{original_text}\n\n[req:{request_id}]"
+
+    messages = [
+        {"role": "system", "content": "你是一个将用户画像改写成同义不同表述的助手，严格保持事实与含义不变。"},
+        {"role": "user", "content": user_content},
+    ]
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.85,
+                max_tokens=600,
+            )
+            out = (response.choices[0].message.content or "").strip()
+            # 去掉可能被模型回显的请求标识
+            if "[req:" in out:
+                out = out.split("[req:")[0].strip()
+            if out:
+                return out
+        except Exception as e:
+            err = str(e).lower()
+            if "rate_limit" in err or "429" in err:
+                wait = base_delay * (2 ** (attempt - 1))
+                logger.warning(f"  [重写人设 重试 {attempt}/{max_retries}] 频率限制，等待 {wait:.0f}s...")
+                time.sleep(wait)
+            else:
+                logger.warning(f"  [重写人设 重试 {attempt}/{max_retries}] {e}")
+    logger.warning("  人设重写失败，将使用原始模板。")
+    return None
 
 
 # ============================================================
@@ -263,6 +487,8 @@ def build_system_prompt(persona: dict) -> str:
 # ============================================================
 
 SURVEY_QUESTIONS = """
+【问卷背景说明】本问卷假设的演出均在天津举办；以下题目中的「该城市」「演出举办城市」「目的地城市」均指天津。
+
 请根据你的人设，回答以下所有问题，并以 JSON 格式输出全部答案。
 
 === 一、筛选题（所有人必填）===
@@ -301,7 +527,7 @@ Q6（一般优先选择哪个档次的座位？Q1="从未有过" 时填 null）
 Q7（平均每场非门票类消费（交通/住宿/餐饮/周边等）？Q1="从未有过" 时填 null）
   可选值: "200元及以下" | "200-500元" | "501-1000元" | "1001-2000元" | "2001元及以上" | null
 
-=== 四、态度量表题（所有人必填，整数 1-5，1=非常不同意，5=非常同意）===
+=== 四、态度量表题（天津场演出，所有人必填，整数 1-5，1=非常不同意，5=非常同意）===
 
 Scale_1_1: 我在社交媒体（微博、抖音、小红书等）上频繁刷到关于本次演出的相关信息
 Scale_1_2: 粉丝圈内高质量的安利内容（如视频剪辑、深度乐评）激发了我去现场的欲望
@@ -483,11 +709,39 @@ def main() -> None:
                         help="每次 API 调用之间的间隔秒数（防止频率限制）")
     parser.add_argument("--seed",     type=int,   default=None,
                         help="随机种子（设置后可复现画像采样结果）")
+    parser.add_argument("--rewrite-persona", dest="rewrite_persona", action="store_true", default=True,
+                        help="先用 LLM 重写人设再填问卷，减少模板感（默认开启）")
+    parser.add_argument("--no-rewrite-persona", dest="rewrite_persona", action="store_false",
+                        help="关闭人设重写，直接使用模板人设填问卷")
+    parser.add_argument("--tianjin-only", dest="tianjin_only", action="store_true", default=False,
+                        help="仅生成天津样本：常住地限为天津本地，地址从天津市内区中随机")
+    parser.add_argument("--tianjin-ratio", type=float, default=None, metavar="P",
+                        help="天津/非天津比例：每份样本以概率 P 为天津、1-P 为非天津（如 --n 500 --tianjin-ratio 0.35 得约 35%% 天津）。与 --tianjin-only 同时给出时以本参数为准")
+    parser.add_argument("--cluster-sampling", dest="cluster_sampling", action="store_true", default=False,
+                        help="整群抽样：天津从全市所有区中抽 6 区，非天津从全国所有省中抽 6 省，仅从抽中群内生成常住地")
+    parser.add_argument("--tianjin-clusters", type=int, default=6,
+                        help="整群抽样时天津抽取的区数（从全市 16 区中抽，默认 6）")
+    parser.add_argument("--province-clusters", type=int, default=6,
+                        help="整群抽样时非天津从全国省中抽取的省数（默认 6）；省内市任选")
     args = parser.parse_args()
 
     if args.seed is not None:
         random.seed(args.seed)
         logger.info(f"随机种子已设置为 {args.seed}")
+
+    global _RESIDENCE_POOL_RUN, _CLUSTER_RUN
+    if args.cluster_sampling:
+        _RESIDENCE_POOL_RUN, _CLUSTER_RUN = build_cluster_residence_pool(
+            n_tianjin_clusters=args.tianjin_clusters,
+            n_province_clusters=args.province_clusters,
+        )
+        logger.info(
+            f"整群抽样已启用 | 天津抽 {len(_RESIDENCE_POOL_RUN['天津本地'])} 个区 | "
+            f"全国省中抽 {args.province_clusters} 个省 → 共 7 群，非天津 only 时按群等权抽样"
+        )
+    else:
+        _RESIDENCE_POOL_RUN = None
+        _CLUSTER_RUN = None
 
     api_key = args.api_key or os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -502,15 +756,31 @@ def main() -> None:
     success_count = 0
     fail_count    = 0
 
-    logger.info(f"开始生成 {args.n} 份合成问卷 | 模型: {args.model} | 输出: {args.output}")
+    p_tianjin = (max(0.0, min(1.0, args.tianjin_ratio)) if args.tianjin_ratio is not None else None)
+    if p_tianjin is not None:
+        logger.info(
+            f"开始生成 {args.n} 份合成问卷 | 模型: {args.model} | 输出: {args.output} | "
+            f"人设重写: {'开' if args.rewrite_persona else '关'} | 天津比例: {p_tianjin:.0%} | "
+            f"整群抽样: {'是' if args.cluster_sampling else '否'}"
+        )
+    else:
+        logger.info(
+            f"开始生成 {args.n} 份合成问卷 | 模型: {args.model} | 输出: {args.output} | "
+            f"人设重写: {'开' if args.rewrite_persona else '关'} | 天津限定: {'是' if args.tianjin_only else '否'} | "
+            f"整群抽样: {'是' if args.cluster_sampling else '否'}"
+        )
     logger.info("-" * 60)
 
     for i in range(1, args.n + 1):
         logger.info(f"[{i:>4}/{args.n}] 正在处理...")
-
-        persona       = generate_persona()
-        system_prompt = build_system_prompt(persona)
-        llm_answers   = call_llm_api(client, system_prompt, model=args.model)
+        tianjin_this = (random.random() < p_tianjin) if p_tianjin is not None else args.tianjin_only
+        persona = generate_persona(tianjin_only=tianjin_this)
+        if args.rewrite_persona:
+            rewritten = rewrite_persona_with_llm(client, persona, model=args.model)
+            system_prompt = build_system_prompt_from_rewritten(rewritten) if rewritten else build_system_prompt(persona)
+        else:
+            system_prompt = build_system_prompt(persona)
+        llm_answers = call_llm_api(client, system_prompt, model=args.model)
 
         if llm_answers is None:
             fail_count += 1

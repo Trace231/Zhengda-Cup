@@ -5,7 +5,7 @@
 ### 1.1 数据与样本
 
 - **来源**：synthetic_survey_data.csv，约 **N=200**，由 data_pipeline.py + DeepSeek API 生成。
-- **画像**：先验 P(E) + 条件 P(I|E) 采样，再以人设 prompt 驱动 LLM 填答，逻辑连贯、非真实受访者。
+- **画像**：由先验 P(E) 与条件概率 P(I|E) 依序采样得到，联合分布为 P(E,I)=P(E)×P(I|E)；再以人设 prompt 驱动 LLM 填答，逻辑连贯、非真实受访者。
 
 ### 1.2 信效度（9 个构念）
 
