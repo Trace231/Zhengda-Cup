@@ -17,6 +17,9 @@ Z世代天津线下观演调研 — 合成问卷数据生成脚本
     # 500 份样本，约 35%% 天津、65%% 非天津（可加 --cluster-sampling 或 --seed 复现）
     python data_pipeline.py --n 500 --tianjin-ratio 0.35 --output survey_500.csv
 
+    # 续写：在已有 300 条基础上再生成 200 条并追加到同一文件（输出默认与 --append-to 相同）
+    python data_pipeline.py --n 200 --append-to survey_300.csv
+
     # 整群抽样：天津从全市 16 区中抽 6 区，非天津从全国省中抽 6 省（可复现：加 --seed 42）
     python data_pipeline.py --n 700 --cluster-sampling --tianjin-clusters 6 --province-clusters 6
 
@@ -582,8 +585,14 @@ Q10_3（第三组，从下列中选最愿意购买的一个，严格照抄选项
   "C: 1280元（内场）+ 轻度互动（上大屏）+ 无文旅服务"
   "均不购买"
 
+=== 六、不满因素题（所有人必填，最多选3项）===
+Q_dissatisfaction（目前线下演出最让您感到不满的因素是？最多选3项，返回 JSON 数组）
+  可选项列表（严格照抄，可选 1～3 项）:
+    ["抢票机制不透明/黄牛横行", "现场秩序混乱/安保不力", "交通疏导不畅/散场难",
+     "餐饮等配套设施物价过高", "演出内容缩水/音响效果差"]
+
 输出一个合法 JSON，包含上述所有键：Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8,
-Scale_1_1 ~ Scale_9_3（共27个），Q10_1, Q10_2, Q10_3。
+Scale_1_1 ~ Scale_9_3（共27个），Q10_1, Q10_2, Q10_3，Q_dissatisfaction。
 """
 
 
@@ -705,6 +714,8 @@ def main() -> None:
                         help="API Base URL（默认 DeepSeek，也可替换为其他兼容端点）")
     parser.add_argument("--output",   type=str,   default="synthetic_survey_data.csv",
                         help="输出 CSV 文件路径")
+    parser.add_argument("--append-to", type=str,   default=None, metavar="PATH",
+                        help="已有 CSV 路径：将本次生成的记录追加到该文件后再写入 --output；若未指定 --output 则默认写入同一文件")
     parser.add_argument("--interval", type=float, default=1.0,
                         help="每次 API 调用之间的间隔秒数（防止频率限制）")
     parser.add_argument("--seed",     type=int,   default=None,
@@ -724,6 +735,10 @@ def main() -> None:
     parser.add_argument("--province-clusters", type=int, default=6,
                         help="整群抽样时非天津从全国省中抽取的省数（默认 6）；省内市任选")
     args = parser.parse_args()
+
+    # 续写模式：未显式指定 --output 时，默认写入与 --append-to 相同路径
+    if args.append_to is not None and args.output == "synthetic_survey_data.csv":
+        args.output = args.append_to
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -757,6 +772,8 @@ def main() -> None:
     fail_count    = 0
 
     p_tianjin = (max(0.0, min(1.0, args.tianjin_ratio)) if args.tianjin_ratio is not None else None)
+    if args.append_to is not None:
+        logger.info(f"续写模式：将追加到 {args.append_to}，结果写入 {args.output}")
     if p_tianjin is not None:
         logger.info(
             f"开始生成 {args.n} 份合成问卷 | 模型: {args.model} | 输出: {args.output} | "
@@ -812,6 +829,22 @@ def main() -> None:
     demo_cols = [c for c in df.columns if c.startswith("Q11_")]
     other_cols = [c for c in df.columns if c not in meta_cols and c not in demo_cols]
     df = df[other_cols + demo_cols + meta_cols]
+
+    # 续写：读取已有 CSV，校验列一致后拼接，再写入
+    if args.append_to is not None:
+        path_append = os.path.abspath(args.append_to)
+        if os.path.isfile(path_append):
+            df_existing = pd.read_csv(path_append, encoding="utf-8-sig")
+            if set(df_existing.columns) != set(df.columns):
+                logger.error(
+                    "已有文件与本次生成的列不一致，无法安全追加。请勿使用 --append-to 或保证文件由本脚本生成。"
+                )
+                return
+            df = df.reindex(columns=df_existing.columns)
+            df = pd.concat([df_existing, df], ignore_index=True)
+            logger.info(f"已续写：本次新增 {success_count} 份，合计 {len(df)} 行")
+        else:
+            logger.warning(f"--append-to 指向的文件不存在: {path_append}，将仅保存本次生成的 {len(df)} 行")
 
     df.to_csv(args.output, index=False, encoding="utf-8-sig")
 

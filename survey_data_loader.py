@@ -9,7 +9,7 @@ import pandas as pd
 from pathlib import Path
 
 # 默认数据文件（合成问卷 CSV）
-DEFAULT_FILE = "synthetic_survey_data.csv"
+DEFAULT_FILE = "/Users/thomaswang/thomas/mks/survey_300.csv"
 
 # 27 个量表题列名（与 data_pipeline 输出一致）
 SCALE_COLS = [f"Scale_{i}_{j}" for i in range(1, 10) for j in range(1, 4)]
