@@ -20,8 +20,14 @@ Z世代天津线下观演调研 — 合成问卷数据生成脚本
     # 续写：在已有 300 条基础上再生成 200 条并追加到同一文件（输出默认与 --append-to 相同）
     python data_pipeline.py --n 200 --append-to survey_300.csv
 
+    # 断点恢复：目标 500 份，若 survey_500.csv 已有 200 行则只再生成 300 份并合并写入
+    python data_pipeline.py --n 500 --resume --output survey_500.csv
+
     # 整群抽样：天津从全市 16 区中抽 6 区，非天津从全国省中抽 6 省（可复现：加 --seed 42）
     python data_pipeline.py --n 700 --cluster-sampling --tianjin-clusters 6 --province-clusters 6
+
+    # 指定外省：整群抽样时只从你给的省份里抽（自动启用整群抽样）
+    python data_pipeline.py --n 700 --provinces 云南省,江西省,福建省,海南省,宁夏回族自治区,西藏自治区
 
     # 关闭人设重写，直接用模板填问卷
     python data_pipeline.py --n 100 --no-rewrite-persona
@@ -248,27 +254,76 @@ _AGE_RANGE_LABEL: dict[str, str] = {
 }
 
 
+# 常用简称 -> 完整省名（ALL_PROVINCE_TO_CITIES 的 key）
+_SHORT_PROVINCE: dict[str, str] = {
+    "宁夏": "宁夏回族自治区", "西藏": "西藏自治区", "广西": "广西壮族自治区",
+    "新疆": "新疆维吾尔自治区", "内蒙古": "内蒙古自治区", "北京": "北京市",
+    "天津": "天津市", "上海": "上海市", "重庆": "重庆市",
+}
+
+
+def _resolve_province_name(name: str) -> str | None:
+    """将用户输入的省名解析为 ALL_PROVINCE_TO_CITIES 的 key（完整名）。"""
+    name = name.strip()
+    if not name:
+        return None
+    if name in ALL_PROVINCE_TO_CITIES:
+        return name
+    if name in _SHORT_PROVINCE:
+        return _SHORT_PROVINCE[name] if _SHORT_PROVINCE[name] in ALL_PROVINCE_TO_CITIES else None
+    if name + "省" in ALL_PROVINCE_TO_CITIES:
+        return name + "省"
+    return None
+
+
 def build_cluster_residence_pool(
     n_tianjin_clusters: int = 6,
     n_province_clusters: int = 6,
+    provinces: list[str] | None = None,
 ) -> tuple[dict[str, list[str]], list[tuple[str, list[str]]]]:
     """
-    整群抽样：天津从全市所有区中抽 6 区；非天津从全国所有省中抽 6 省。
-    - 天津 only 时：仅从抽中的 6 个区中随机抽（用返回的 pool）。
-    - 非天津 only 时：按「抽中的 7 群」等权抽样——先等权抽一个群（1 天津 + 6 省），再在该群内随机抽区/市。
+    整群抽样：天津从全市所有区中抽若干区；非天津从全国省中抽若干省（或使用指定的省列表）。
+    - 若传入 provinces，则非天津部分仅使用这些省（不再随机抽省）。
+    - 天津 only 时：仅从抽中的区中随机抽（用返回的 pool）。
+    - 非天津 only 时：按「抽中的群」等权抽样——先等权抽一个群（1 天津 + 若干省），再在该群内随机抽区/市。
+
+    Parameters
+    ----------
+    n_tianjin_clusters : int
+        天津抽取的区数。
+    n_province_clusters : int
+        未指定 provinces 时，从全国随机抽取的省数。
+    provinces : list[str] | None
+        指定外省列表（如 ["云南省", "江西省", ...]），与 ALL_PROVINCE_TO_CITIES 的 key 一致或可解析。为 None 时按 n_province_clusters 随机抽省。
 
     Returns
     -------
     pool : dict
         四档：天津本地 / 京津冀近途 / 中程较近 / 其他省份远途
     cluster_list : list of (residence_type, list of 区/市)
-        共 7 个元素：1 天津 + 6 省，每省按距离归为 京津冀/中程/远途
+        1 天津 + 若干省，每省按距离归为 京津冀/中程/远途
     """
     k_t = min(n_tianjin_clusters, len(TIANJIN_ALL_DISTRICTS))
-    k_p = min(n_province_clusters, len(ALL_PROVINCE_TO_CITIES))
     sampled_tianjin = random.sample(TIANJIN_ALL_DISTRICTS, k_t)
     all_provinces = list(ALL_PROVINCE_TO_CITIES.keys())
-    sampled_provinces = random.sample(all_provinces, k_p)
+
+    if provinces is not None and len(provinces) > 0:
+        resolved = []
+        for p in provinces:
+            r = _resolve_province_name(p)
+            if r is not None:
+                if r == "天津市":
+                    logger.warning("天津市已作为「天津本地」单独抽样，已从 --provinces 中忽略")
+                    continue
+                resolved.append(r)
+            else:
+                logger.warning(f"未识别的省份名「{p}」，已跳过（可用名见 province_cities_data.ALL_PROVINCE_TO_CITIES）")
+        sampled_provinces = list(dict.fromkeys(resolved))  # 去重且保持顺序
+        if not sampled_provinces:
+            raise ValueError("--provinces 中没有可识别的省份，请使用完整名称如 云南省、宁夏回族自治区")
+    else:
+        k_p = min(n_province_clusters, len(all_provinces))
+        sampled_provinces = random.sample(all_provinces, k_p)
 
     jingjinji_cities = [c for p in sampled_provinces if p in JINGJINJI_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
     mid_cities = [c for p in sampled_provinces if p in MID_RANGE_PROVINCES for c in ALL_PROVINCE_TO_CITIES[p]]
@@ -663,8 +718,21 @@ def call_llm_api(
 
 
 # ============================================================
-# § 工具函数：合并画像元数据与 LLM 答案为一行记录
+# § 工具函数：合并画像元数据与 LLM 答案为一行记录 + 增量保存
 # ============================================================
+
+def _save_progress(output_path: str, existing_records: list[dict], records: list[dict]) -> None:
+    """将已有 + 当前记录写入 CSV（列顺序与最终一致），用于断点前增量保存。"""
+    if not existing_records and not records:
+        return
+    all_records = existing_records + records
+    df = pd.DataFrame(all_records)
+    meta_cols = [c for c in df.columns if c.startswith("_meta_")]
+    demo_cols = [c for c in df.columns if c.startswith("Q11_")]
+    other_cols = [c for c in df.columns if c not in meta_cols and c not in demo_cols]
+    df = df[other_cols + demo_cols + meta_cols]
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
 
 def _flatten_record(persona: dict, llm_answers: dict) -> dict:
     """
@@ -714,6 +782,8 @@ def main() -> None:
                         help="API Base URL（默认 DeepSeek，也可替换为其他兼容端点）")
     parser.add_argument("--output",   type=str,   default="synthetic_survey_data.csv",
                         help="输出 CSV 文件路径")
+    parser.add_argument("--resume",   action="store_true",
+                        help="断点恢复：若 --output 文件已存在，则只生成不足部分使总行数达到 --n，再合并写入")
     parser.add_argument("--append-to", type=str,   default=None, metavar="PATH",
                         help="已有 CSV 路径：将本次生成的记录追加到该文件后再写入 --output；若未指定 --output 则默认写入同一文件")
     parser.add_argument("--interval", type=float, default=1.0,
@@ -733,7 +803,9 @@ def main() -> None:
     parser.add_argument("--tianjin-clusters", type=int, default=6,
                         help="整群抽样时天津抽取的区数（从全市 16 区中抽，默认 6）")
     parser.add_argument("--province-clusters", type=int, default=6,
-                        help="整群抽样时非天津从全国省中抽取的省数（默认 6）；省内市任选")
+                        help="整群抽样时非天津从全国省中抽取的省数（默认 6）；省内市任选。指定 --provinces 时本参数无效")
+    parser.add_argument("--provinces", type=str, default=None, metavar="LIST",
+                        help="整群抽样时指定外省列表，逗号分隔，如：云南省,江西省,福建省,海南省,宁夏回族自治区,西藏自治区。指定后仅从这些省中抽样（自动启用整群抽样）")
     args = parser.parse_args()
 
     # 续写模式：未显式指定 --output 时，默认写入与 --append-to 相同路径
@@ -744,16 +816,30 @@ def main() -> None:
         random.seed(args.seed)
         logger.info(f"随机种子已设置为 {args.seed}")
 
+    # 指定 --provinces 时自动启用整群抽样
+    specified_provinces: list[str] | None = None
+    if args.provinces and args.provinces.strip():
+        specified_provinces = [s.strip() for s in args.provinces.split(",") if s.strip()]
+    use_cluster = args.cluster_sampling or bool(specified_provinces)
+
     global _RESIDENCE_POOL_RUN, _CLUSTER_RUN
-    if args.cluster_sampling:
+    if use_cluster:
         _RESIDENCE_POOL_RUN, _CLUSTER_RUN = build_cluster_residence_pool(
             n_tianjin_clusters=args.tianjin_clusters,
             n_province_clusters=args.province_clusters,
+            provinces=specified_provinces,
         )
-        logger.info(
-            f"整群抽样已启用 | 天津抽 {len(_RESIDENCE_POOL_RUN['天津本地'])} 个区 | "
-            f"全国省中抽 {args.province_clusters} 个省 → 共 7 群，非天津 only 时按群等权抽样"
-        )
+        n_grps = len(_CLUSTER_RUN)  # 1 天津 + 若干外省群
+        if specified_provinces:
+            logger.info(
+                f"整群抽样已启用 | 天津抽 {len(_RESIDENCE_POOL_RUN['天津本地'])} 个区 | "
+                f"指定外省 {len(specified_provinces)} 个：{', '.join(specified_provinces)} → 共 {n_grps} 群"
+            )
+        else:
+            logger.info(
+                f"整群抽样已启用 | 天津抽 {len(_RESIDENCE_POOL_RUN['天津本地'])} 个区 | "
+                f"全国省中抽 {args.province_clusters} 个省 → 共 {n_grps} 群，非天津 only 时按群等权抽样"
+            )
     else:
         _RESIDENCE_POOL_RUN = None
         _CLUSTER_RUN = None
@@ -766,6 +852,24 @@ def main() -> None:
 
     # 初始化客户端（OpenAI SDK 兼容 DeepSeek API）
     client = OpenAI(api_key=api_key, base_url=args.base_url)
+
+    # 断点恢复：若 --resume 且输出文件已存在，只生成不足部分
+    existing_records: list[dict] = []
+    n_to_generate = args.n
+    if args.resume:
+        out_path = os.path.abspath(args.output)
+        if os.path.isfile(out_path):
+            df_existing = pd.read_csv(out_path, encoding="utf-8-sig")
+            existing_count = len(df_existing)
+            need = args.n - existing_count
+            if need <= 0:
+                logger.info(f"断点恢复：{args.output} 已有 {existing_count} 行，已达目标 --n {args.n}，无需生成。")
+                return
+            existing_records = df_existing.to_dict("records")
+            n_to_generate = need
+            logger.info(f"断点恢复：已有 {existing_count} 行，再生成 {n_to_generate} 份至目标 {args.n}。")
+        else:
+            logger.info("断点恢复：输出文件不存在，将从头生成。")
 
     records: list[dict] = []
     success_count = 0
@@ -788,8 +892,8 @@ def main() -> None:
         )
     logger.info("-" * 60)
 
-    for i in range(1, args.n + 1):
-        logger.info(f"[{i:>4}/{args.n}] 正在处理...")
+    for i in range(1, n_to_generate + 1):
+        logger.info(f"[{i:>4}/{n_to_generate}] 正在处理...")
         tianjin_this = (random.random() < p_tianjin) if p_tianjin is not None else args.tianjin_only
         persona = generate_persona(tianjin_only=tianjin_this)
         if args.rewrite_persona:
@@ -807,22 +911,30 @@ def main() -> None:
         record = _flatten_record(persona, llm_answers)
         records.append(record)
         success_count += 1
+        # 每成功一条即写入，崩溃或中断后可用 --resume 继续
+        _save_progress(args.output, existing_records, records)
 
         logger.info(
             f"  → 成功 ✓ | 画像: {persona['gender']} / {persona['age_occ_group']} / "
             f"{persona['income']} / {persona['consumption_pref']}"
         )
 
-        if i < args.n:
+        if i < n_to_generate:
             time.sleep(args.interval)
 
     logger.info("-" * 60)
 
-    if not records:
+    if not records and not existing_records:
         logger.error("没有生成任何有效数据，请检查 API Key 和网络连接。")
         return
 
-    df = pd.DataFrame(records)
+    # 断点恢复时合并已有 + 本次新生成
+    if existing_records:
+        all_records = existing_records + records
+        df = pd.DataFrame(all_records)
+        logger.info(f"已合并：原有 {len(existing_records)} 行 + 本次 {len(records)} 行 = {len(df)} 行")
+    else:
+        df = pd.DataFrame(records)
 
     # 规范化列顺序：人口统计列置后，元数据列置最后
     meta_cols = [c for c in df.columns if c.startswith("_meta_")]
@@ -848,8 +960,8 @@ def main() -> None:
 
     df.to_csv(args.output, index=False, encoding="utf-8-sig")
 
-    logger.info(f"完成！成功: {success_count} 份 | 失败: {fail_count} 份 | "
-                f"成功率: {success_count / args.n * 100:.1f}%")
+    logger.info(f"完成！本次成功: {success_count} 份 | 失败: {fail_count} 份 | "
+                f"成功率: {success_count / n_to_generate * 100:.1f}%")
     logger.info(f"数据已保存至: {args.output}  （{len(df.columns)} 列 × {len(df)} 行）")
 
 
