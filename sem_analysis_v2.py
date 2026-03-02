@@ -15,7 +15,7 @@ import semopy
 from semopy import Model, calc_stats
 
 # ── 数据准备 ──────────────────────────────────────────────────────────────────
-NEW_FILE = 'survey_300_clean.csv'
+NEW_FILE = 'survey_clean.csv'
 
 CONSTRUCTS = {
     'SMI': {'label': '社交媒体信息影响', 'cols': ['Scale_1_1','Scale_1_2','Scale_1_3']},
@@ -233,3 +233,21 @@ if __name__ == '__main__':
     print('\n路径系数:')
     print(r2['path_table'][['假设','路径','标准化β','p值','显著性','假设验证']].to_string(index=False))
     print('\nR²:', r2['r2'])
+
+    # 保存结果供 sem_charts_v2 / write_ch5_ch6 使用
+    import json
+    def to_json(pt):
+        return pt[['假设','路径','标准化β','p值','显著性','假设验证']].to_dict(orient='records')
+    def _jv(v):
+        try: return round(float(v),4) if not (hasattr(v,'__float__') and np.isnan(float(v))) else None
+        except: return v
+    results = {
+        'm1_fit': {k: _jv(v) for k,v in r1['fit_summary'].items()},
+        'm1_paths': to_json(r1['path_table']),
+        'm2_fit': {k: _jv(v) for k,v in r2['fit_summary'].items()},
+        'm2_paths': to_json(r2['path_table']),
+        'm1_r2': r1['r2'], 'm2_r2': r2['r2'],
+    }
+    with open('sem_results_v2.json','w',encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    print('\n  Saved sem_results_v2.json')

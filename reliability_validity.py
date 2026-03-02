@@ -14,11 +14,13 @@ from survey_data_loader import (
     load_data, get_score_df, get_rv_results,
     CONSTRUCTS, DEFAULT_FILE,
 )
+import sys
 import numpy as np
 import pandas as pd
 
-# ── 1-3. 数据加载（委托给 data_pipeline）────────────────────────────────────
-df, data = load_data()
+# ── 1-3. 数据加载（可指定 CSV：python reliability_validity.py survey_clean.csv）────────────────
+_data_file = (sys.argv[1] if len(sys.argv) > 1 else None) or DEFAULT_FILE
+df, data = load_data(_data_file)
 score_df     = get_score_df(data)
 result_dict  = get_rv_results(data)
 ALL_CONSTRUCTS = CONSTRUCTS

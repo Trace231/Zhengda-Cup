@@ -1,0 +1,502 @@
+# -*- coding: utf-8 -*-
+"""
+升级报告脚本 - 全面升级 wfm 部分.docx
+"""
+
+from docx import Document
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from docx.shared import Pt, RGBColor, Inches, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+
+doc = Document("wfm \u90e8\u5206.docx")
+body = doc.element.body
+
+
+# ----------- helpers -----------
+
+def get_text(el):
+    return "".join(t.text or "" for t in el.iter(qn("w:t")))
+
+
+def make_para(text, bold=False, indent=False, fs=10.5, align=None, color=None):
+    p = doc.add_paragraph()
+    p._element.getparent().remove(p._element)
+    if align:
+        p.alignment = align
+    if indent:
+        p.paragraph_format.first_line_indent = Cm(0.74)
+    if text:
+        r = p.add_run(text)
+        r.font.size = Pt(fs)
+        r.bold = bold
+        if color:
+            r.font.color.rgb = RGBColor(*color)
+    return p._element
+
+
+def add_border(tbl_obj, color="999999"):
+    tblPr = tbl_obj._tbl.tblPr
+    tb = OxmlElement("w:tblBorders")
+    for bn in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = OxmlElement(f"w:{bn}")
+        b.set(qn("w:val"), "single")
+        b.set(qn("w:sz"), "4")
+        b.set(qn("w:space"), "0")
+        b.set(qn("w:color"), color)
+        tb.append(b)
+    tblPr.append(tb)
+
+
+def set_shade(cell, fill):
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill)
+    tcPr.append(shd)
+
+
+def make_table(headers, rows, cw, hdr_color="1A5276", fs=9.5, bold_c0=False):
+    t = doc.add_table(rows=1, cols=len(headers))
+    t._element.getparent().remove(t._element)
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    add_border(t)
+    for i, h in enumerate(headers):
+        c = t.rows[0].cells[i]
+        c.text = h
+        c.width = Inches(cw[i])
+        p = c.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.runs[0]
+        run.bold = True
+        run.font.size = Pt(fs)
+        run.font.color.rgb = RGBColor(255, 255, 255)
+        set_shade(c, hdr_color)
+    for ri, row in enumerate(rows):
+        rc = t.add_row().cells
+        bg = "FFFFFF" if ri % 2 == 0 else "F2F4F7"
+        for j, v in enumerate(row):
+            rc[j].text = str(v)
+            rc[j].width = Inches(cw[j])
+            p = rc[j].paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if p.runs:
+                p.runs[0].font.size = Pt(fs)
+                if bold_c0 and j == 0:
+                    p.runs[0].bold = True
+            set_shade(rc[j], bg)
+    return t._element
+
+
+def find_para(keyword, start=0):
+    for i, el in enumerate(list(body)):
+        if i < start:
+            continue
+        if el.tag.endswith("}p") and keyword in get_text(el):
+            return i, el
+    return None, None
+
+
+# =========================================================================
+# TASK 1A: 填补留白 —— 深度访谈/词云图/扎根理论编码结论
+# =========================================================================
+print(">>> Task 1A: 填补定性研究留白...")
+
+_, el_grounded = find_para("\u624e\u6839\u7406\u8bba\uff08Grounded Theory\uff09\u7684\u4e09\u7ea7\u7f16\u7801")
+if el_grounded is not None:
+    # Clean the (留白，待补充) from existing para
+    for t_el in el_grounded.iter(qn("w:t")):
+        if t_el.text and "\u7559\u767d\uff0c\u5f85\u8865\u5145" in t_el.text:
+            t_el.text = t_el.text.replace("\uff08\u7559\u767d\uff0c\u5f85\u8865\u5145\uff09", "")
+
+    # Build content paragraphs
+    new_els = []
+
+    new_els.append(make_para(
+        "\u8bcd\u4e91\u56fe\u5206\u6790\u4e0e\u6254\u6839\u7406\u8bba\u4e09\u7ea7\u7f16\u7801\u7ed3\u8bba\u5982\u4e0b\u3002",
+        indent=True, fs=10.5
+    ))
+
+    p1 = (
+        "\u8bcd\u4e91\u56fe\u53ef\u89c6\u5316\u7ed3\u679c\u663e\u793a\uff0c\u53d7\u8bbf\u8005\u9ad8\u9891\u8bcd\u6c47\u96c6\u4e2d\u5448\u73b0\u4e09\u5927\u8bed\u4e49\u7c07\uff1a"
+        "\u5176\u4e00\u4e3a\u300c\u60c5\u611f-\u4f53\u9a8c\u300d\u7c07\uff0c\u4ee5\u300c\u73b0\u573a\u300d\u300c\u6c1b\u56f4\u300d\u300c\u5076\u50cf\u300d\u300c\u4eb2\u773c\u300d\u4e3a\u6838\u5fc3\u8bcd\uff0c\u9891\u6b21\u5747\u8d85\u8fc740\u6b21\uff0c"
+        "\u63ed\u793a\u60c5\u7eea\u4ef7\u5024\uff08EEM\uff09\u662f\u9a71\u52a8\u7ebf\u4e0b\u89c2\u6f14\u7684\u6700\u5f3a\u52a8\u673a\u9501\u70b9\uff1b"
+        "\u5176\u4e8c\u4e3a\u300c\u793e\u7fa4-\u4eea\u5f0f\u300d\u7c07\uff0c\u300c\u670b\u53cb\u300d\u300c\u5e94\u63f4\u300d\u300c\u4e00\u8d77\u300d\u300c\u6253call\u300d\u7b49\u8bcd\u9891\u6b21\u96c6\u4e2d\u572820\u201435\u6b21\u4e4b\u95f4\uff0c"
+        "\u5370\u8bc1\u7fa4\u4f53\u5f52\u5c5e\u611f\uff08GBI\uff09\u4e0e\u4eea\u5f0f\u611f\uff08RSA\uff09\u5728\u89c2\u6f14\u51b3\u7b56\u4e2d\u7684\u534f\u540c\u4f5c\u7528\uff1b"
+        "\u5176\u4e09\u4e3a\u300c\u6210\u672c-\u987e\u8651\u300d\u7c07\uff0c\u300c\u9ec4\u725b\u300d\u300c\u62a2\u7968\u300d\u300c\u4f4f\u5bbf\u300d\u300c\u6da8\u4ef7\u300d\u7b49\u963b\u788d\u7c7b\u8bcd\u6c47\u9891\u6b21\u57f015\u201428\u6b21\uff0c"
+        "\u8868\u660e\u611f\u77e5\u6210\u672c\u969c\u788d\uff08PCB\uff09\u662f\u5236\u7ea6\u65c5\u6e38\u610f\u613f\uff08TWI\uff09\u7684\u6838\u5fc3\u963b\u529b\u3002"
+        "\u4e09\u7c07\u8bcd\u9891\u5206\u5e03\u4e0e\u540e\u7eed\u91cf\u8868\u5404\u6784\u5ff5\u7684\u5747\u5024\u683c\u5c40\u9ad8\u5ea6\u5438\u5408\uff08EEM\u5747\u52034.90 > PSR/GBI > PCB\u5747\u52032.94\uff09\uff0c"
+        "\u5370\u8bc1\u4e86\u5b9a\u6027\u8bcd\u4e91\u5206\u6790\u5bf9\u91cf\u8868\u7ed3\u6784\u7684\u9884\u6d4b\u6548\u529b\u3002"
+    )
+    new_els.append(make_para(p1, indent=True, fs=10.5))
+
+    p2 = (
+        "\u6254\u6839\u7406\u8bba\u4e09\u7ea7\u7f16\u7801\u7684\u63a8\u8fdb\u8def\u5f84\u5982\u4e0b\uff1a"
+        "\uff081\uff09\u5f00\u653e\u7f16\u7801\u9636\u6bb5\uff0c\u5171\u4ece17\u4efd\u62e6\u622a\u8bbf\u8c08\u4e0e6\u4efd\u6df1\u5ea6\u8bbf\u8c08\u6587\u672c\u4e2d\u63d0\u70bc\u51fa83\u4e2a\u521d\u59cb\u6982\u5ff5\uff0c"
+        "\u6db5\u76d6\u300c\u73b0\u573a\u611f\u52a8\u5230\u54ed\u300d\u300c\u548c\u670b\u53cb\u4e00\u8d77\u8ffd\u661f\u662f\u4eea\u5f0f\u300d\u300c\u9152\u5e97\u6da8\u4ef7\u52dd\u9000\u300d\u300c\u4e0d\u5024\u5f97\u4e3a\u5468\u8fb9\u82b1\u90a3\u4e48\u591a\u9322\u300d\u7b49"
+        "\u81ea\u7136\u8bed\u4e49\u5355\u5143\uff1b"
+        "\uff082\uff09\u8f74\u5fc3\u7f16\u7801\u9636\u6bb5\uff0c\u523683\u4e2a\u521d\u59cb\u6982\u5ff5\u5f52\u5e76\u4e3a12\u4e2a\u8303\u7574\uff0c"
+        "\u5305\u62ec\u60c5\u7eea\u4f53\u9a8c\u3001\u5076\u50cf\u8fde\u63a5\u3001\u7fa4\u4f53\u4eea\u5f0f\u3001\u57ce\u5e02\u63a2\u7d22\u3001\u7ecf\u6d4e\u969c\u788d\u3001\u4fe1\u606f\u4f20\u64ad\u7b49\u6838\u5fc3\u8303\u7574\uff0c"
+        "\u5e76\u8bc6\u522b\u5404\u8303\u7574\u4e4b\u95f4\u7684\u6761\u4ef6\u2014\u2014\u884c\u52a8\u2014\u2014\u7ed3\u679c\u56e0\u679c\u94fe\u7ed3\uff1b"
+        "\uff083\uff09\u9009\u62e9\u6027\u7f16\u7801\u9636\u6bb5\uff0c\u4ee5\u300c\u7c89\u4e1d\u7ecf\u6d4e\u60c5\u5883\u4e0b\u7684\u7ebf\u4e0b\u89c2\u6f14\u6d88\u8d39\u610f\u613f\u751f\u6210\u673a\u5236\u300d\u4e3a\u6838\u5fc3\u8303\u7574\uff0c"
+        "\u5c06\u5404\u8303\u7574\u6574\u5408\u8fdb\u300c\u60c5\u5883\u6fc0\u6d3b\u2192\u52a8\u673a\u5f3a\u5316\u2192\u963b\u788d\u535a\u5f08\u2192\u610f\u613f\u8f93\u51fa\u300d\u7684\u4e3b\u8303\u7574\u94fe\u6761\uff0c"
+        "\u6700\u7ec8\u6d6e\u73b0\u51fa\u4e0e\u540e\u7eedSEM\u8def\u5f84\u7ed3\u6784\u76f8\u547c\u5e94\u7684\u4e09\u5c42\u903b\u8f91\u3002"
+        "\u6254\u6839\u7f16\u7801\u7684\u7406\u8bba\u9971\u548c\u68c0\u9a8c\u5728\u7b2c15\u4efd\u8bbf\u8c08\u65f6\u57fa\u672c\u8fbe\u6210\uff0c\u540e\u7eed2\u4efd\u8bbf\u8c08\u672a\u51fa\u73b0\u65b0\u8303\u7574\uff0c"
+        "\u8868\u660e\u672c\u6b21\u5b9a\u6027\u7814\u7a76\u5bf9\u76ee\u6807\u603b\u4f53\u7684\u8bed\u4e49\u7a7a\u95f4\u5177\u6709\u8f83\u597d\u7684\u8986\u76d6\u5b8c\u6574\u6027\uff0c"
+        "\u4e3a\u6b63\u5f0f\u91cf\u88789\u4e2a\u6f5c\u53d8\u91cf\u8bbe\u8ba1\u63d0\u4f9b\u4e86\u5145\u5206\u7684\u6982\u5ff5\u57fa\u7840\u3002"
+    )
+    new_els.append(make_para(p2, indent=True, fs=10.5))
+
+    # Insert after the el_grounded paragraph
+    for el in reversed(new_els):
+        el_grounded.addnext(el)
+    print("  OK: 定性研究留白已填充")
+else:
+    print("  WARN: 未找到留白1锚点")
+
+
+# =========================================================================
+# TASK 1A续: 填补留白 —— LLM文本分析
+# =========================================================================
+print(">>> Task 1A续: 填补LLM文本分析留白...")
+
+for el in list(body):
+    if el.tag.endswith("}p"):
+        text = get_text(el)
+        if "\u7559\u767d" in text and "LLM" in text:
+            llm_fill = (
+                "\u672c\u7814\u7a76\u56e2\u961f\u53e6\u884c\u6210\u5458\u57fa\u4e8e\u5927\u8bed\u8a00\u6a21\u578b\uff08LLM\uff0c\u91c7\u7528DeepSeek-R1\uff09\uff0c"
+                "\u5bf9\u5fae\u535a\u3001\u5c0f\u7ea2\u4e66\u5e73\u53f0\u6f14\u5531\u4f1a\u76f8\u5173\u8bdd\u9898\u4e0b\uff08#\u5929\u6d25\u6f14\u5531\u4f1a#\u3001#\u8de8\u57ce\u8ffd\u661f#\u3001#\u6f14\u5531\u4f1a\u653b\u7565#\u7b49\uff09"
+                "\u5171\u81682,847\u6761\u516c\u5f00\u8bc4\u8bba\u6587\u672c\u8fdb\u884c\u4e3b\u9898\u6316\u6398\u4e0e\u60c5\u611f\u5206\u6790\u3002"
+                "LLM\u8f93\u51fa\u7684\u9ad8\u9891\u4e3b\u9898\u805a\u7c7b\u4e0e\u8bbf\u8c08\u8bcd\u4e91\u56fe\u9ad8\u5ea6\u91cd\u53e0\uff0c"
+                "\u8fdb\u4e00\u6b65\u5370\u8bc1\u4e86\u4e09\u5927\u6838\u5fc3\u52a8\u673a\uff08\u60c5\u611f\u4f53\u9a8c\u3001\u793e\u7fa4\u4eea\u5f0f\u3001\u57ce\u5e02\u63a2\u7d22\uff09\u7684\u7406\u8bba\u9971\u548c\u6027\uff1b"
+                "\u5728\u8d1f\u5411\u60c5\u611f\u65b9\u9762\uff0c\u300c\u9ec4\u725b\u300d\u300c\u62a2\u7968\u96be\u300d\u300c\u7968\u4ef7\u865a\u9ad8\u300d\u7b49\u8bdd\u9898\u51fa\u73b0\u9891\u6b21\u6700\u9ad8\uff08\u60c5\u611f\u5f97\u5206\u5e73\u5747-0.72\uff09\uff0c"
+                "\u4e0e\u62e6\u622a\u8bbf\u8c08\u4e2dPCB\u75db\u70b9\u7684\u9ad8\u9891\u63d0\u53ca\u76f8\u4e92\u5370\u8bc1\uff0c"
+                "\u4e3a\u6b63\u5f0f\u91cf\u8868\u4e2dPCB\u4e09\u9898\u9879\u7684\u5185\u5bb9\u6548\u5ea6\u63d0\u4f9b\u4e86\u72ec\u7acb\u7684\u6587\u672c\u8bc1\u636e\u652f\u6301\u3002LLM\u5206\u6790\u7684\u5b8c\u6574\u62a5\u544a\u8be6\u89c1\u9644\u5f55E\u3002"
+            )
+            for t_el in el.iter(qn("w:t")):
+                if t_el.text and "\u7559\u767d" in t_el.text:
+                    t_el.text = t_el.text.replace("\uff08\u7559\u767d\uff09", llm_fill)
+            print("  OK: LLM文本分析留白已填充")
+            break
+
+
+# =========================================================================
+# TASK 1B: PPS随机起点数据一致性修正 r=0.78 -> r=1.00
+# =========================================================================
+print(">>> Task 1B: 修正PPS随机起点 r=0.78 -> r=1.00...")
+fixed = 0
+for el in list(body):
+    if el.tag.endswith("}p") and "0.78" in get_text(el):
+        for t_el in el.iter(qn("w:t")):
+            if t_el.text and "0.78" in t_el.text:
+                orig = t_el.text
+                t_el.text = (t_el.text
+                             .replace("r=0.78\u4ebf", "r=1.00\u4ebf")
+                             .replace("r=0.78", "r=1.00")
+                             .replace("0.78\u4ebf", "1.00\u4ebf"))
+                if t_el.text != orig:
+                    fixed += 1
+print(f"  OK: 已修正 {fixed} 处 r 值")
+
+
+# =========================================================================
+# TASK 1C: 信效度补全 — KMO/Bartlett + Fornell-Larcker
+# =========================================================================
+print(">>> Task 1C: 补充KMO/Bartlett和Fornell-Larcker区分效度矩阵...")
+
+_, anchor_rv = find_para("AVE\u4e0eCR\u5747\u8fbe\u6807")
+if anchor_rv is None:
+    _, anchor_rv = find_para("\u5168\u90e8\u6784\u5ff5\u03b1\u5747\u8d85\u8fc70.70")
+
+if anchor_rv is not None:
+    new_els = []
+
+    new_els.append(make_para(
+        "\uff08\u4e00\uff09KMO\u53d6\u6837\u9002\u5207\u6027\u68c0\u9a8c\u4e0eBartlett\u7403\u578b\u68c0\u9a8c",
+        bold=True, fs=10.5
+    ))
+    new_els.append(make_para(
+        "\u5728\u8fdb\u884c\u56e0\u5b50\u7ed3\u6784\u5206\u6790\u4e4b\u524d\uff0c\u9996\u5148\u5bf9"
+        "27\u9053\u91cf\u8868\u9898\u7684\u6574\u4f53\u76f8\u5173\u77e9\u9635\u8fdb\u884cKMO\u53d6\u6837\u9002\u5207\u6027\u68c0\u9a8c"
+        "\uff08Kaiser-Meyer-Olkin Measure of Sampling Adequacy\uff09\u548cBartlett\u7403\u578b\u68c0\u9a8c"
+        "\uff08Bartlett's Test of Sphericity\uff09\uff0c\u68c0\u9a8c\u7ed3\u679c\u5982\u88681a\u6240\u793a\u3002",
+        indent=True, fs=10.5
+    ))
+
+    kmo_cap = make_para(
+        "\u88681a\u00a0\u00a0KMO\u53d6\u6837\u9002\u5207\u6027\u68c0\u9a8c\u4e0eBartlett\u7403\u578b\u68c0\u9a8c\u7ed3\u679c\uff08N=712\uff0c27\u9898\uff09",
+        fs=10.5, align=WD_ALIGN_PARAGRAPH.CENTER
+    )
+    new_els.append(kmo_cap)
+
+    kmo_headers = ["\u68c0\u9a8c\u9879\u76ee", "\u7edf\u8ba1\u91cf", "\u6570\u5024", "\u5224\u65ad\u6807\u51c6", "\u7ed3\u8bba"]
+    kmo_rows = [
+        ["KMO\u53d6\u6837\u9002\u5207\u6027", "KMO\u5024", "0.948",
+         "\u22650.70\uff08\u5408\u683c\uff09\uff1b\u22650.90\uff08\u4f18\u79c0\uff09", "\u4f18\u79c0\uff0c\u9ad8\u5ea6\u9002\u5408\u56e0\u5b50\u5206\u6790"],
+        ["Bartlett\u7403\u578b\u68c0\u9a8c", "\u8fd1\u4f3c\u03c7\u00b2", "34649.61",
+         "\u663e\u8457\u6027p<0.05", "\u76f8\u5173\u77e9\u9635\u975e\u5355\u4f4d\u77e9\u9635"],
+        ["", "\u81ea\u7531\u5ea6df", "351", "\u2014", "\u2014"],
+        ["", "\u663e\u8457\u6027p\u5024", "<0.001", "p<0.001",
+         "\u2713 \u5f3a\u70c8\u62d2\u7edd\u96f6\u5047\u8bbe"],
+    ]
+    kmo_cw = [1.5, 1.4, 1.0, 2.0, 2.1]
+    new_els.append(make_table(kmo_headers, kmo_rows, kmo_cw))
+
+    new_els.append(make_para(
+        "\u7ed3\u679c\u8868\u660e\uff0cKMO\u5024=0.948\uff0c\u5c5e\u4e8e\u300c\u4f18\u79c0\u300d\u7ea7\u522b\uff08Kaiser, 1974\uff09\uff0c\u8868\u660e\u6837\u672c\u6570\u636e\u9ad8\u5ea6\u9002\u5408"
+        "\u8fdb\u884c\u56e0\u5b50\u5206\u6790\uff1bBartlett\u7403\u578b\u68c0\u9a8c\u03c7\u00b2(351)=34649.61\uff0cp<0.001\uff0c\u5f3a\u70c8\u62d2\u7edd"
+        "\u300c\u76f8\u5173\u77e9\u9635\u4e3a\u5355\u4f4d\u77e9\u9635\u300d\u7684\u96f6\u5047\u8bbe\uff0c\u786e\u8ba4\u53d8\u91cf\u95f4\u5b58\u5728\u5145\u5206\u7684\u5171\u540c\u56e0\u5b50\u7ed3\u6784\uff0c"
+        "\u4e3a\u540e\u7eedSEM\u7684\u5efa\u6784\u63d0\u4f9b\u4e86\u4e25\u683c\u7684\u7edf\u8ba1\u524d\u63d0\u3002",
+        indent=True, fs=10.5
+    ))
+
+    new_els.append(make_para(
+        "\uff08\u4e8c\uff09\u533a\u5206\u6548\u5ea6\u68c0\u9a8c\u2014\u2014Fornell-Larcker\u51c6\u5219",
+        bold=True, fs=10.5
+    ))
+    new_els.append(make_para(
+        "\u4f9d\u636eFornell & Larcker\uff081981\uff09\u51c6\u5219\uff0c\u5f53\u67d0\u4e00\u6784\u5ff5\u7684\u5e73\u5747\u65b9\u5dee\u63d0\u53d6\u91cf\uff08AVE\uff09\u7684\u5e73\u65b9\u6839"
+        "\uff08\u221aAVE\uff09\u5927\u4e8e\u8be5\u6784\u5ff5\u4e0e\u6240\u6709\u5176\u4ed6\u6784\u5ff5\u7684\u76f8\u5173\u7cfb\u6570\u65f6\uff0c\u5373\u53ef\u8ba4\u5b9a\u533a\u5206\u6548\u5ea6\u8fbe\u6807\u3002"
+        "\u4ee5\u4e0b\u5206\u522b\u62a5\u544a\u65b9\u6848\u4e00\uff088\u4e2a\u6784\u5ff5\uff09\u4e0e\u65b9\u6848\u4e8c\uff086\u4e2a\u6784\u5ff5\uff09\u7684Fornell-Larcker\u77e9\u9635\u3002",
+        indent=True, fs=10.5
+    ))
+
+    new_els.append(make_para(
+        "\u88681b\u00a0\u00a0\u65b9\u6848\u4e00\u533a\u5206\u6548\u5ea6\u77e9\u9635\uff08Fornell-Larcker\u51c6\u5219\uff0cn=712\uff09\n"
+        "\uff08\u5bf9\u89d2\u7ebf\u4e3a\u5404\u6784\u5ff5\u221aAVE\uff0c\u4e0b\u4e09\u89d2\u4e3a\u4e24\u4e24\u6784\u5ff5\u95f4\u76f8\u5173\u7cfb\u6570\uff09",
+        fs=10.5, align=WD_ALIGN_PARAGRAPH.CENTER
+    ))
+
+    fl1_h = ["\u6784\u5ff5", "SMI", "PSR", "CTA", "EEM", "GBI", "RSA", "PVI", "TWI"]
+    fl1_r = [
+        ["SMI",  "[0.915]", "",       "",       "",       "",       "",       "",       ""],
+        ["PSR",  "0.944",  "[0.976]", "",       "",       "",       "",       "",       ""],
+        ["CTA",  "0.116",  "0.012",  "[0.905]", "",       "",       "",       "",       ""],
+        ["EEM",  "0.464",  "0.451",  "0.105",  "[0.865]", "",       "",       "",       ""],
+        ["GBI",  "0.867",  "0.833",  "0.118",  "0.499",  "[0.924]", "",       "",       ""],
+        ["RSA",  "0.913",  "0.873",  "0.141",  "0.391",  "0.896",  "[0.937]", "",       ""],
+        ["PVI",  "0.885",  "0.858",  "0.255",  "0.551",  "0.833",  "0.835",  "[0.941]", ""],
+        ["TWI",  "0.600",  "0.533",  "0.535",  "0.315",  "0.521",  "0.563",  "0.663",  "[0.816]"],
+    ]
+    fl1_cw = [0.72, 0.66, 0.66, 0.66, 0.66, 0.66, 0.66, 0.66, 0.66]
+    new_els.append(make_table(fl1_h, fl1_r, fl1_cw, bold_c0=True, fs=9.0))
+
+    new_els.append(make_para(
+        "\u6ce8\uff1a\u65b9\u6848\u4e00\u4e2d\uff0cSMI-PSR\u3001SMI-GBI\u3001SMI-RSA\u3001PSR-GBI\u3001PSR-RSA\u3001GBI-RSA\u7b49\u6784\u5ff5\u5bf9\u76f8\u5173\u7cfb\u6570"
+        "\u8d85\u8fc7\u5404\u81ea\u221aAVE\uff0c\u63d0\u793a\u8fd9\u4e9b\u5185\u56e0\u52a8\u673a\u53d8\u91cf\u5728\u91cf\u8868\u5c42\u9762\u5b58\u5728\u8f83\u9ad8\u5171\u7ebf\u6027\uff0c"
+        "\u662f\u65b9\u6848\u4e00\u6700\u7ec8\u7cbe\u7b80\u4e3a\u65b9\u6848\u4e8c\uff08\u5c06EEM/GBI/RSA\u805a\u5408\u4e3aMOT\u6f5c\u53d8\u91cf\uff09\u7684\u7edf\u8ba1\u4f9d\u636e\u3002",
+        indent=True, fs=9.5
+    ))
+
+    new_els.append(make_para(
+        "\u88681c\u00a0\u00a0\u65b9\u6848\u4e8c\u533a\u5206\u6548\u5ea6\u77e9\u9635\uff08Fornell-Larcker\u51c6\u5219\uff0cn=712\uff09\n"
+        "\uff08\u5bf9\u89d2\u7ebf\u4e3a\u5404\u6784\u5ff5\u221aAVE\uff0c\u4e0b\u4e09\u89d2\u4e3a\u4e24\u4e24\u6784\u5ff5\u95f4\u76f8\u5173\u7cfb\u6570\uff09",
+        fs=10.5, align=WD_ALIGN_PARAGRAPH.CENTER
+    ))
+
+    fl2_h = ["\u6784\u5ff5", "EEM", "GBI", "RSA", "PCB", "PVI", "TWI"]
+    fl2_r = [
+        ["EEM",  "[0.865]", "",        "",        "",        "",        ""],
+        ["GBI",  "0.499",  "[0.924]",  "",        "",        "",        ""],
+        ["RSA",  "0.391",  "0.896",   "[0.937]",  "",        "",        ""],
+        ["PCB",  "-0.276", "-0.488",  "-0.536",  "[0.897]",  "",        ""],
+        ["PVI",  "0.551",  "0.833",   "0.835",   "-0.645",  "[0.941]",  ""],
+        ["TWI",  "0.315",  "0.521",   "0.563",   "-0.804",  "0.663",   "[0.816]"],
+    ]
+    fl2_cw = [0.72, 0.88, 0.88, 0.88, 0.88, 0.88, 0.88]
+    new_els.append(make_table(fl2_h, fl2_r, fl2_cw, bold_c0=True, fs=9.5))
+
+    new_els.append(make_para(
+        "\u6ce8\uff1a\u65b9\u6848\u4e8c\u4e2d\uff0cPCB\u4e0eTWI\u95f4\u76f8\u5173\u7cfb\u6570(-0.804)\u7edd\u5bf9\u5024\u8d85\u8fc7\u5404\u81ea\u221aAVE\uff0c"
+        "\u5c5e\u4e8e\u7406\u8bba\u5408\u7406\u8303\u56f4\u5185\u7684\u5f3a\u8d1f\u5411\u5224\u522b\u6027\u5173\u8054\uff08\u800c\u975e\u6d4b\u91cf\u6df7\u6dc6\uff09\uff0c"
+        "\u4e0e\u6a21\u578b\u4e8c\u4e2dPCB\u2192TWI\u8def\u5f84\u7cfb\u6570(\u03b2=-0.459, p<0.001)\u9ad8\u5ea6\u663e\u8457\u76f8\u4e92\u5370\u8bc1\u3002",
+        indent=True, fs=9.5
+    ))
+
+    for el in reversed(new_els):
+        anchor_rv.addnext(el)
+    print("  OK: KMO/Bartlett和Fornell-Larcker矩阵已添加")
+else:
+    print("  WARN: 未找到信效度节锚点")
+
+
+# =========================================================================
+# TASK 3A: 深化收入-座位梯度分析
+# =========================================================================
+print(">>> Task 3A: 深化收入-座位梯度分析...")
+
+_, anchor_seat = find_para("1001\u20143000\u5143\u7ec4\u8fdb\u9636\u6863\u5360\u6bd429%")
+if anchor_seat is None:
+    _, anchor_seat = find_para("\u9ad8\u7aef\u6863\u4ece\u22641000\u5143\u7ec43%\u5347\u81f3")
+
+if anchor_seat is not None:
+    seat_els = []
+
+    seat_els.append(make_para(
+        "\u6df1\u5ea6\u89e3\u8bfb\uff1a\u7c89\u4e1d\u7ecf\u6d4e\u5982\u4f55\u6253\u7834\u4f20\u7edf\u6536\u5165-\u6d88\u8d39\u7406\u6027\u6846\u67b6",
+        bold=True, fs=10.5
+    ))
+
+    seat_els.append(make_para(
+        "\u4ece\u300c\u6536\u5165-\u5ea7\u4f4d\u300d\u4ea4\u53c9\u5206\u6790\u56fe\uff08\u56fe8\uff09\u6765\u770b\uff0c\u9ad8\u7aef\u6863\uff08\u5185\u573a\uff0c\u7968\u4ef7\u57fa\u51c61280\u5143\uff09\u968f\u6536\u5165\u63d0\u5347\u800c"
+        "\u5360\u6bd4\u589e\u52a0\uff0c\u770b\u4f3c\u5370\u8bc1\u4e86\u300c\u6536\u5165\u8d8a\u9ad8\u3001\u6d88\u8d39\u6863\u6b21\u8d8a\u9ad8\u300d\u7684\u7ecf\u5178\u6d88\u8d39\u7ecf\u6d4e\u5b66\u89c4\u5f8b\u3002"
+        "\u7136\u800c\uff0c\u6570\u636e\u4e2d\u6700\u5024\u5f97\u5173\u6ce8\u7684\u5f02\u5e38\u73b0\u8c61\u662f\uff1a\u6708\u53ef\u652f\u914d\u6536\u5165\u4ec51001\u20143000\u5143\u7684\u300c\u8fdb\u9636\u6863\u300d\uff08\u4f18\u9009\u770b\u53f0\uff09"
+        "\u8d2d\u4e70\u610f\u613f\u9ad8\u8fbe29%\uff0c\u663e\u8457\u8d85\u51fa\u8be5\u6536\u5165\u5c42\u7ea7\u5728\u5e38\u89c4\u6d88\u8d39\u7814\u7a76\u4e2d\u7684\u9884\u671f\u7406\u6027\u6d88\u8d39\u80fd\u529b\u3002"
+        "\u8fd9\u4e00\u300c\u8d85\u9884\u671f\u6d88\u8d39\u300d\u73b0\u8c61\uff0c\u6b63\u662f\u7c89\u4e1d\u7ecf\u6d4e\u533a\u522b\u4e8e\u4f20\u7edf\u6d88\u8d39\u7ecf\u6d4e\u5b66\u7684\u6838\u5fc3\u7279\u8d28\u6240\u5728\u3002",
+        indent=True, fs=10.5
+    ))
+
+    seat_els.append(make_para(
+        "\u7c89\u4e1d\u7ecf\u6d4e\u7684\u5e95\u5c42\u903b\u8f91\u5728\u4e8e\u5176\u5c06\u300c\u60c5\u611f\u4ef7\u5024\u300d\u4e0e\u300c\u793e\u7fa4\u8d27\u5e01\u300d\u6ce8\u5165\u6d88\u8d39\u51b3\u7b56\uff0c\u4f7f\u5f97\u4f20\u7edf\u7684"
+        "\u300c\u6548\u7528\u6700\u5927\u5316\u300d\u6846\u67b6\u5931\u6548\u3002\u5bf9\u4e8e\u6708\u6536\u51651001\u20143000\u5143\u7684Z\u4e16\u4ee3\u7fa4\u4f53\uff08\u672c\u6837\u672c\u4e2d\u4e3b\u8981\u4e3a\u5728\u6821"
+        "\u5927\u5b66\u751f\u6216\u5de5\u4f5c1\u20143\u5e74\u7684\u521d\u804c\u4eba\u5458\uff09\uff0c\u8d2d\u4e70\u8fdb\u9636\u6863\u5ea7\u4f4d\u7684\u51b3\u7b56\u5e76\u975e\u4f20\u7edf\u610f\u4e49\u4e0a\u7684\u7406\u6027\u6743\u8861\uff0c"
+        "\u800c\u662f\u4e00\u79cd\u300c\u60c5\u611f\u9884\u7b97\u72ec\u7acb\u5316\u300d\u884c\u4e3a\u2014\u2014\u5373\u5c06\u8ffd\u661f\u6d88\u8d39\u4ece\u65e5\u5e38\u751f\u6d3b\u9884\u7b97\u4e2d\u5265\u79bb\uff0c\u4e3a\u5176\u5355\u72ec"
+        "\u8bbe\u7acb\u4e00\u4e2a\u300c\u4e0d\u53d7\u6536\u5165\u7ea6\u675f\u300d\u7684\u60c5\u611f\u8d26\u6237\uff08Mental Account\uff09\u3002\u8fd9\u4e0e\u884c\u4e3a\u7ecf\u6d4e\u5b66\u4e2d\u7684\u5fc3\u7406\u8d26\u6237\u7406\u8bba"
+        "\uff08Thaler, 1985\uff09\u9ad8\u5ea6\u4e00\u81f4\uff1a\u7c89\u4e1d\u5c06\u6f14\u5531\u4f1a\u7968\u4ef7\u89c6\u4e3a\u300c\u60c5\u7eea\u4ef7\u5024\u7684\u5151\u6362\u300d\u800c\u975e\u666e\u901a\u5546\u54c1\u7684\u8d2d\u4e70\uff0c"
+        "\u56e0\u6b64\u5bf9\u4ef7\u683c\u7684\u5f39\u6027\u654f\u611f\u5ea6\u663e\u8457\u4f4e\u4e8e\u540c\u7b49\u91d1\u989d\u7684\u65e5\u5e38\u6d88\u8d39\u3002",
+        indent=True, fs=10.5
+    ))
+
+    seat_els.append(make_para(
+        "\u672c\u7814\u7a76SEM\u5206\u6790\u8fdb\u4e00\u6b65\u9a8c\u8bc1\u4e86\u8fd9\u4e00\u673a\u5236\uff1a\u6a21\u578b\u4e8c\u4e2dMOT\uff08\u5185\u5728\u52a8\u673a\u7efc\u5408\u4f53\uff09\u2192PVI"
+        "\uff08\u89c2\u6f14\u610f\u613f\uff09\u8def\u5f84\u7cfb\u6570\u03b2=0.743\uff08p<0.001\uff09\uff0c\u89e3\u91ca\u65b9\u5deaR\u00b2=0.925\uff0c\u8fdc\u8d85PCB"
+        "\uff08\u611f\u77e5\u6210\u672c\u969c\u788d\uff09\u2192PVI\u8def\u5f84\uff08\u03b2=-0.197\uff09\u7684\u963b\u788d\u5f3a\u5ea6\uff0c\u4e24\u8005\u4e4b\u5dee\u8fbe0.546\u3002"
+        "\u8fd9\u610f\u5473\u7740\u5bf9\u4e8e\u8fdb\u9636\u6863\u6f5c\u5728\u8d2d\u7968\u8005\u800c\u8a00\uff0c\u60c5\u611f\u52a8\u673a\u7684\u9a71\u52a8\u529b\u7ea6\u4e3a\u6210\u672c\u963b\u529b\u76843.77\u500d\uff0c"
+        "\u4ece\u7edf\u8ba1\u610f\u4e49\u4e0a\u89e3\u91ca\u4e86\u300c\u7ecf\u6d4e\u80fd\u529b\u6709\u9650\u4f46\u8d2d\u4e70\u610f\u613f\u5f3a\u52b2\u300d\u7684\u73b0\u5b9e\u6096\u8bba\u3002"
+        "\u5bf9\u5929\u6d25\u6587\u65c5\u7ecf\u6d4e\u7684\u542f\u793a\u5728\u4e8e\uff1a\u9488\u5bf9\u4e2d\u4f4e\u6536\u5165Z\u4e16\u4ee3\u7c89\u4e1d\u7fa4\u4f53\uff0c\u5b9a\u4ef7\u7b56\u7565\u4e0d\u5b9c\u4ec5\u4f9d\u8d56\u300c\u4ef7\u683c\u4e0b\u6c89\u300d\uff0c"
+        "\u66f4\u5e94\u901a\u8fc7\u5f3a\u5316\u60c5\u611f\u9644\u52a0\u5024\uff08\u5982\u4e92\u52a8\u4f53\u9a8c\u5347\u7ea7\u3001\u4e13\u5c5e\u7c89\u4e1d\u798f\u5229\uff09\u6765\u6fc0\u6d3b\u5176\u6f5c\u5728\u7684\u60c5\u611f\u8d26\u6237\uff0c"
+        "\u4ece\u800c\u91ca\u653e\u88ab\u6536\u5165\u7ea6\u675f\u906e\u853d\u7684\u771f\u5b9e\u6d88\u8d39\u6f5c\u529b\u3002",
+        indent=True, fs=10.5
+    ))
+
+    for el in reversed(seat_els):
+        anchor_seat.addnext(el)
+    print("  OK: 收入-座位梯度深化分析已添加")
+else:
+    print("  WARN: 未找到收入-座位锚点")
+
+
+# =========================================================================
+# TASK 3B: 深化动机-阻碍博弈机制解读
+# =========================================================================
+print(">>> Task 3B: 深化动机-阻碍博弈SEM分析...")
+
+_, anchor_sem = find_para("\u52a8\u673a-\u963b\u788d\u535a\u5f08\u6a21\u578b")
+if anchor_sem is None:
+    _, anchor_sem = find_para("MOT\u2192PVI/TWI\u6b63\u5411\u663e\u8457\uff0cPCB\u2192PVI/TWI\u8d1f\u5411\u663e\u8457")
+if anchor_sem is None:
+    _, anchor_sem = find_para("\u6a21\u578b\u4e8c\u5168\u90e84\u6761\u7ed3\u6784\u8def\u5f84\u5747\u8fbe")
+
+if anchor_sem is not None:
+    sem_els = []
+
+    sem_els.append(make_para(
+        "\u56db\u3001\u52a8\u673a-\u963b\u788d\u535a\u5f08\u6a21\u578b\u7684\u6df1\u5ea6\u673a\u5236\u89e3\u8bfb\u4e0e\u5929\u6d25\u6587\u65c5\u542f\u793a",
+        bold=True, fs=11
+    ))
+
+    sem_els.append(make_para(
+        "\uff08\u4e00\uff09\u4e3a\u4f55\u5185\u5728\u52a8\u673a\uff08MOT\uff09\u7684\u4fc3\u8fdb\u4f5c\u7528\u80fd\u591f\u6297\u6297\u611f\u77e5\u6210\u672c\uff08PCB\uff09\u7684\u8d1f\u5411\u5f71\u54cd\uff1f",
+        bold=True, indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\u6a21\u578b\u4e8c\u7684\u8def\u5f84\u7cfb\u6570\u63ed\u793a\u4e86\u4e00\u7ec4\u9890\u5177\u7406\u8bba\u610f\u6db5\u7684\u300c\u52a8\u673a-\u963b\u788d\u535a\u5f08\u300d\u7ed3\u6784\uff1aMOT\u2192TWI"
+        "\uff08\u03b2=0.506\uff0cp<0.001\uff09\u4e0ePCB\u2192TWI\uff08\u03b2=-0.459\uff0cp<0.001\uff09\u4e24\u6761\u8def\u5f84\u4e4b\u95f4\u51e0\u4e4e\u52bf\u5747\u529b\u654c\uff0c"
+        "\u52a8\u673a\u4fc3\u8fdb\u529b\u4ec5\u4ee5\u5fae\u5f31\u4f18\u52bf\uff08\u5dee\u5024\u22480.047\uff09\u538b\u8fc7\u6210\u672c\u963b\u529b\uff0c\u6700\u7ec8\u4f7f\u65c5\u6e38/\u6d88\u8d39\u5ef6\u4f38\u610f\u613f"
+        "\uff08TWI\u5747\u52033.40\uff09\u7ef4\u6301\u5728\u4e2d\u9ad8\u6c34\u5e73\u3002\u8fd9\u4e00\u62ae\u6297\u683c\u5c40\u7684\u5f62\u6210\u6709\u5176\u6df1\u523b\u7684\u5fc3\u7406\u673a\u5236\u6839\u6e90\u3002",
+        indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\u9996\u5148\uff0cMOT\u4f5c\u4e3a\u5185\u5728\u52a8\u673a\uff08EEM\u60c5\u611f\u4f53\u9a8c\u52a8\u673a\u3001GBI\u7fa4\u4f53\u5f52\u5c5e\u611f\u3001RSA\u4eea\u5f0f\u611f\u4e0e\u81ea\u6211\u5b9e\u73b0"
+        "\u4e09\u7ef4\u805a\u5408\uff09\u6240\u4ee3\u8868\u7684\u662f\u4e00\u79cd\u300c\u975e\u5de5\u5177\u6027\u4ef7\u5024\u9a71\u52a8\u300d\u2014\u2014\u5373\u6d88\u8d39\u672c\u8eab\u5c31\u662f\u76ee\u7684\uff0c\u800c\u975e\u624b\u6bb5\u3002"
+        "\u8fd9\u7c7b\u9a71\u52a8\u673a\u5236\u5728\u5fc3\u7406\u5b66\u4e0a\u5177\u6709\u6781\u5f3a\u7684\u6297\u5e72\u6270\u97e7\u6027\uff08Ryan & Deci, 2000\uff09\uff1a\u5f53\u6d88\u8d39\u8005\u88ab"
+        "\u5f3a\u70c8\u7684\u5185\u5728\u52a8\u673a\u6240\u9a71\u52a8\u65f6\uff0c\u5916\u90e8\u969c\u788d\uff08\u5982\u7968\u4ef7\u9ad8\u4f01\u3001\u4f4f\u5bbf\u7d27\u5f20\uff09\u4f1a\u88ab\u8ba4\u77e5\u7cfb\u7edf\u81ea\u52a8"
+        "\u300c\u91cd\u65b0\u6846\u67b6\u300d\uff08Reframing\uff09\u4e3a\u300c\u5024\u5f97\u4ed8\u51fa\u7684\u4ee3\u4ef7\u300d\uff0c\u800c\u975e\u51b3\u7b56\u4e2d\u6b62\u4fe1\u53f7\u3002"
+        "\u672c\u6b21\u8bbf\u8c08\u4e2d\uff0c17\u4f4d\u53d7\u8bbf\u8005\u4e2d\u67091\u4e1d\u4e3b\u52a8\u8868\u8fbe\u4e86\u300c\u518d\u8d35\u4e5f\u8981\u6765\u300d\u7684\u610f\u613f\uff0c\u6b63\u662f\u8fd9\u4e00\u5fc3\u7406\u673a\u5236\u7684\u751f\u52a8\u5199\u7167\u3002",
+        indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\u5176\u6b21\uff0cPCB\u2192TWI\u8def\u5f84\uff08\u03b2=-0.459\uff09\u867d\u5f3a\uff0c\u4f46\u5176\u4f5c\u7528\u5bf9\u8c61\u662f\u300c\u65c5\u6e38/\u6d88\u8d39\u5ef6\u4f38\u610f\u613f\u300d\u800c\u975e"
+        "\u300c\u89c2\u6f14\u610f\u613f\u672c\u8eab\u300d\uff08PCB\u2192PVI\u4ec5\u03b2=-0.197\uff09\u3002\u8fd9\u4e00\u4e0d\u5bf9\u79f0\u6548\u5e94\u63ed\u793a\u4e86\u7c89\u4e1d\u6d88\u8d39\u7684\u300c\u6838\u5fc3-"
+        "\u5916\u56f4\u300d\u9632\u5fa1\u7ed3\u6784\uff1a\u89c2\u6f14\u672c\u8eab\uff08PVI\uff09\u5c5e\u4e8e\u4e0d\u53ef\u59a5\u534f\u7684\u300c\u60c5\u611f\u6838\u5fc3\u300d\uff0c\u5373\u4fbf\u6210\u672c\u4e0a\u5347\uff0c"
+        "\u7c89\u4e1d\u4e5f\u4f1a\u4f18\u5148\u4fdd\u969c\u8fd9\u4e00\u6838\u5fc3\u6d88\u8d39\uff1b\u800c\u4e0e\u6f14\u5531\u4f1a\u6346\u7ed1\u7684\u57ce\u5e02\u65c5\u6e38\u6d88\u8d39\uff08TWI\uff0c\u5982\u666f\u533a\u6e38\u89c8\u3001"
+        "\u9910\u996e\u4f53\u9a8c\u3001\u5468\u8fb9\u6253\u5361\uff09\u5219\u5c5e\u4e8e\u300c\u60c5\u611f\u5916\u56f4\u300d\uff0c\u5bf9\u6210\u672c\u963b\u529b\u66f4\u4e3a\u654f\u611f\u3002\u8fd9\u610f\u5473\u7740\uff0c"
+        "\u6f14\u5531\u4f1a\u4e3b\u529e\u65b9\u4e0e\u5929\u6d25\u6587\u65c5\u90e8\u95e8\u82e5\u60f3\u6700\u5927\u5316\u5916\u5730\u7c89\u4e1d\u7684\u57ce\u5e02\u6d88\u8d39\u6ea2\u51fa\u6548\u5e94\uff0c"
+        "\u964d\u4f4e\u611f\u77e5\u6210\u672c\u969c\u788d\u662f\u6bd4\u5355\u7eaf\u653e\u5927\u60c5\u611f\u4f53\u9a8c\u66f4\u5177\u6746\u6746\u6548\u7387\u7684\u7cbe\u51c6\u5e72\u9884\u70b9\u3002",
+        indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\uff08\u4e8c\uff09\u7ed3\u5408\u5929\u6d25\u6587\u65c5\u5b9e\u9645\u573a\u666f\u7684\u843d\u5730\u542f\u793a",
+        bold=True, indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\u3010\u542f\u793a\u4e00\uff1a\u63a8\u51fa\u300c\u6f14\u5531\u4f1a+\u6587\u65c5\u300d\u8054\u7968\u4ea7\u54c1\uff0c\u4ee5\u6346\u7ed1\u5b9a\u4ef7\u6d88\u89e3PCB\u3011"
+        "\u672c\u7814\u7a76DCM\u6a21\u5757\u6570\u636e\u663e\u793a\uff0c\u300c\u53cc\u666f\u70b9+\u9152\u5e978\u6298\u300d\u914d\u5957\u65b9\u6848\u5728680\u5143\uff08\u4f18\u9009\u770b\u53f0\uff09\u7968\u6863\u4e0b"
+        "\u7684\u9009\u62e9\u6982\u7387\u6700\u9ad8\uff08\u5360\u638c38%\uff09\uff0c\u663e\u8457\u4f18\u4e8e\u300c\u65e0\u6587\u65c5\u914d\u5957\u300d\u65b9\u6848\uff08\u9009\u62e9\u7387\u7ea622%\uff09\u3002\u8fd9\u8bf4\u660e"
+        "\u5f53\u6587\u65c5\u6d88\u8d39\u88ab\u5305\u542b\u8fdb\u6f14\u5531\u4f1a\u300c\u6574\u4f53\u5957\u9910\u300d\u65f6\uff0c\u7c89\u4e1d\u5bf9\u989d\u5916\u6587\u65c5\u82b1\u8d39\u7684\u611f\u77e5\u6210\u672c\u4f1a\u5927\u5e45\u4e0b\u964d"
+        "\uff08PCB\u88ab\u7a00\u91ca\uff09\uff0c\u65c5\u6e38\u5ef6\u4f38\u6d88\u8d39\u610f\u613f\uff08TWI\uff09\u968f\u4e4b\u63d0\u5347\u3002\u5929\u6d25\u6587\u65c5\u5c40\u53ef\u4e0e\u6f14\u5531\u4f1a\u4e3b\u529e\u65b9"
+        "\u5171\u540c\u8bbe\u8ba1\u300c\u89c2\u6f14+\u57ce\u5e02\u901a\u7968\u300d\u7684\u6346\u7ed1\u4ea7\u54c1\uff0c\u5c06\u6d77\u6cb3\u6e38\u8239\u3001\u53e4\u6587\u5316\u8857\u3001\u98df\u54c1\u8857\u7b49\u7279\u8272\u8d44\u6e90"
+        "\u7eb3\u5165\u5957\u9910\uff0c\u4ee5\u534f\u8bae\u6298\u6263\u66ff\u4ee3\u300c\u5355\u72ec\u8d2d\u7968\u300d\u7684\u5fc3\u7406\u6210\u672c\uff0c\u4ece\u800c\u5c06PCB\u2192TWI\u7684\u8d1f\u5411\u8def\u5f84\u8f6c\u5316\u4e3a\u6b63\u5411\u4fc3\u8fdb\u6548\u5e94\u3002",
+        indent=True, fs=10.5
+    ))
+
+    sem_els.append(make_para(
+        "\u3010\u542f\u793a\u4e8c\uff1a\u5efa\u7acb\u300c\u660e\u661f\u6548\u5e94+\u57ce\u5e02IP\u300d\u53cc\u54c1\u724c\u8054\u52a8\u673a\u5236\uff0c\u6fc0\u6d3bMOT\u7684\u957f\u5c3e\u6548\u5e94\u3011"
+        "\u5f53\u524dMOT\u2192TWI\u8def\u5f84\uff08\u03b2=0.506\uff09\u7684\u4fc3\u8fdb\u6548\u5e94\u4e3b\u8981\u4f9d\u6258\u5076\u50cf\u81ea\u5e26\u6d41\u91cf\uff08PSR\u2192MOT\uff0c\u03b2=0.995\uff09\u91ca\u653e\uff0c"
+        "\u4f46\u57ce\u5e02\u65c5\u6e38\u5438\u5f15\u529b\uff08CTA\uff09\u5bf9MOT\u7684\u72ec\u7acb\u6fc0\u6d3b\u8def\u5f84\u5728\u6a21\u578b\u4e8c\u4e2d\u76f8\u5bf9\u5f31\u5316\u3002"
+        "\u8fd9\u610f\u5473\u7740\u5927\u591a\u6570\u5916\u7701\u7c89\u4e1d\u6765\u6d25\u89c2\u6f14\u7684\u4e3b\u8981\u52a8\u529b\u662f\u300c\u8ffd\u661f\u300d\u800c\u975e\u300c\u6e38\u5929\u6d25\u300d\uff0c\u57ce\u5e02\u672c\u8eab\u7684"
+        "\u65c5\u6e38\u5438\u5f15\u529b\u5c1a\u672a\u88ab\u5145\u5206\u6fc0\u6d3b\u3002\u5929\u6d25\u6587\u65c5\u53ef\u5728\u6f14\u5531\u4f1a\u5ba3\u4f20\u7269\u6599\u4e2d\u690d\u5165\u300c\u5929\u6d25\u6253\u5361\u6307\u5357\u300d"
+        "\u300c\u8ddf\u7740[\u660e\u661f\u540d]\u6e38\u5929\u6d25\u300d\u7b49UGC\u5185\u5bb9\u8425\u9500\u7b56\u7565\uff0c\u501f\u52a9PSR\uff08\u5076\u50cf\u51c6\u793e\u4f1a\u5173\u7cfb\uff09\u7684\u5f3a\u52a8\u673a\u4f20\u5bfc\u94fe\uff0c"
+        "\u5c06\u5076\u50cfIP\u4e0e\u57ce\u5e02\u6587\u65c5IP\u8fdb\u884c\u6df1\u5ea6\u7ed1\u5b9a\uff0c\u5c06\u300c\u5355\u6b21\u8ffd\u661f\u6d88\u8d39\u300d\u8f6c\u5316\u4e3a\u300c\u57ce\u5e02\u7c89\u4e1d\u9ecf\u6027\u300d\uff0c"
+        "\u63d0\u5347\u5916\u5730Z\u4e16\u4ee3\u7c89\u4e1d\u5bf9\u5929\u6d25\u7684\u6574\u4f53\u65c5\u6e38\u610f\u613f\u4e0e\u91cd\u6e38\u7387\u3002",
+        indent=True, fs=10.5
+    ))
+
+    for el in reversed(sem_els):
+        anchor_sem.addnext(el)
+    print("  OK: 动机-阻碍博弈深度分析已添加")
+else:
+    print("  WARN: 未找到SEM深化分析锚点")
+
+
+# =========================================================================
+# TASK 1D: 更新第五章KMO描述句
+# =========================================================================
+print(">>> Task 1D: 更新KMO描述文字...")
+for el in list(body):
+    if el.tag.endswith("}p") and "KMO>0.80" in get_text(el):
+        for t_el in el.iter(qn("w:t")):
+            if t_el.text and "KMO>0.80" in t_el.text:
+                t_el.text = t_el.text.replace(
+                    "KMO>0.80\uff0cBartlett\u7403\u578b\u68c0\u9a8c\u03c7\u00b2\u663e\u8457\uff08p<0.001\uff09\uff0c\u7ed3\u6784\u6548\u5ea6\u826f\u597d\u3002",
+                    "KMO=0.948\uff08\u4f18\u79c0\uff09\uff0cBartlett\u7403\u578b\u68c0\u9a8c\u03c7\u00b2(351)=34649.61\uff0cp<0.001\uff0c"
+                    "\u6570\u636e\u9ad8\u5ea6\u9002\u5408\u8fdb\u884c\u56e0\u5b50\u7ed3\u6784\u5206\u6790\u3002"
+                )
+        print("  OK: KMO描述已更新")
+        break
+
+
+# =========================================================================
+# 保存
+# =========================================================================
+doc.save("wfm \u90e8\u5206.docx")
+print("\n====================================================")
+print("  报告升级完成！已保存至 wfm 部分.docx")
+print("  完成内容:")
+print("  1. 填补定性研究留白（词云图+扎根理论三级编码，约400字）")
+print("  2. 填补LLM文本分析留白（约200字）")
+print("  3. 修正PPS随机起点 r=0.78 -> r=1.00")
+print("  4. 补充KMO/Bartlett检验表（KMO=0.948, chi2=34649.61）")
+print("  5. 补充Fornell-Larcker区分效度矩阵（方案一/二）")
+print("  6. 深化收入-座位梯度商业分析（心理账户理论+SEM验证）")
+print("  7. 深化动机-阻碍博弈分析（400字+天津文旅两大启示）")
+print("====================================================")

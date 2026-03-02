@@ -33,7 +33,8 @@ PALETTE9 = [C_BLUE, C_TEAL, C_AMBER, C_ORANGE, C_GRAY,
 os.makedirs('charts', exist_ok=True)
 
 # ── 载入新数据 ─────────────────────────────────────────────────────────────
-df = pd.read_csv('survey_300_clean.csv')
+DATA_FILE = os.environ.get('SURVEY_DATA', 'survey_clean.csv')
+df = pd.read_csv(DATA_FILE)
 N  = len(df)
 
 CONSTRUCTS = {
@@ -60,7 +61,7 @@ def save(fig, name, dpi=220):
 # 图1  人口学特征概览（2×2）
 # ══════════════════════════════════════════════════════════════════════════════
 fig, axes = plt.subplots(2, 2, figsize=(12, 9))
-fig.suptitle('图1  样本人口学特征概览（n=300）', fontsize=15, fontweight='bold', y=1.01)
+fig.suptitle(f'图1  样本人口学特征概览（n={N}）', fontsize=15, fontweight='bold', y=1.01)
 fig.patch.set_facecolor('white')
 
 # (a) 性别
@@ -137,7 +138,7 @@ save(fig, 'fig1_demographics')
 # 图2  粉丝特征与观演行为（1×3）
 # ══════════════════════════════════════════════════════════════════════════════
 fig, axes = plt.subplots(1, 3, figsize=(14, 5))
-fig.suptitle('图2  粉丝特征与观演行为分布（n=300）', fontsize=14, fontweight='bold', y=1.03)
+fig.suptitle(f'图2  粉丝特征与观演行为分布（n={N}）', fontsize=14, fontweight='bold', y=1.03)
 fig.patch.set_facecolor('white')
 
 # (a) 偶像数量
@@ -231,7 +232,7 @@ save(fig, 'fig3_info_channels')
 # 图4  消费结构（非门票 + 周边月均）
 # ══════════════════════════════════════════════════════════════════════════════
 fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
-fig.suptitle('图4  消费结构分布（n=300）', fontsize=14, fontweight='bold', y=1.02)
+fig.suptitle(f'图4  消费结构分布（n={N}）', fontsize=14, fontweight='bold', y=1.02)
 fig.patch.set_facecolor('white')
 
 # (a) 非门票消费
@@ -278,45 +279,9 @@ plt.tight_layout(pad=2.5)
 save(fig, 'fig4_consumption')
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 图5  九维度均值雷达图
-# ══════════════════════════════════════════════════════════════════════════════
+# 图5 由 fix_radar.py 统一生成（双组对比雷达），此处跳过
 keys   = list(CONSTRUCTS.keys())
 labels = [CONSTRUCTS[k]['label'] for k in keys]
-means  = [score_df[k].mean() for k in keys]
-N_ax   = len(keys)
-angles = np.linspace(0, 2*np.pi, N_ax, endpoint=False).tolist()
-angles_plot = angles + angles[:1]
-means_plot  = means  + means[:1]
-
-fig = plt.figure(figsize=(9, 8))
-fig.patch.set_facecolor('white')
-ax = fig.add_subplot(111, polar=True)
-for r in [2, 3, 4, 5]:
-    ax.plot(angles_plot, [r]*(N_ax+1), '--', color='#ccc', linewidth=0.7, zorder=1)
-    if r in (3, 4):
-        ax.text(0, r+0.05, str(r), ha='center', fontsize=8, color='#999')
-ax.fill(angles_plot, means_plot, color=C_TEAL, alpha=0.25, zorder=2)
-ax.plot(angles_plot, means_plot, 'o-', color=C_TEAL, linewidth=2.5,
-        markersize=8, markerfacecolor='white', markeredgewidth=2.5, zorder=3)
-for angle, val in zip(angles, means):
-    ax.text(angle, val+0.18, f'{val:.2f}', ha='center', va='center',
-            fontsize=9.5, fontweight='bold', color=C_BLUE,
-            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8))
-ax.set_xticks(angles)
-ax.set_xticklabels(labels, fontsize=10, fontweight='bold', color='#333')
-ax.tick_params(axis='x', pad=15)
-ax.set_ylim(1, 5.5)
-ax.set_yticks([])
-ax.spines['polar'].set_visible(False)
-ax.set_title('图5  九大构念量表均值剖面（雷达图，n=300）', fontsize=13,
-             fontweight='bold', pad=25, color='#222')
-ax.plot(angles_plot, [3.5]*(N_ax+1), '-', color=C_AMBER, linewidth=1.5,
-        alpha=0.7, zorder=2, label='中性基准（3.5）')
-ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.12), fontsize=10)
-plt.tight_layout()
-save(fig, 'fig5_radar')
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 图6  有/无偶像群体关键维度对比
@@ -400,7 +365,7 @@ for j, inc in enumerate(inc_order_plot):
 ax.set_ylim(0, 115)
 ax.set_ylabel('比例（%）', fontsize=11)
 ax.set_xlabel('月可支配收入区间', fontsize=11)
-ax.set_title('图7  不同收入层级的座位档次偏好（100%堆叠图，n=300）',
+ax.set_title(f'图7  不同收入层级的座位档次偏好（100%堆叠图，n={N}）',
              fontsize=13, fontweight='bold', pad=10)
 ax.legend(fontsize=11, loc='upper left', framealpha=0.85)
 ax.spines[['top','right']].set_visible(False)
@@ -441,7 +406,7 @@ ax.set_ylim(0.8, 5.5)
 ax.set_yticks([1,2,3,4,5])
 ax.axhline(3.5, color='#aaa', linestyle='--', linewidth=1, alpha=0.7)
 ax.text(len(keys)-0.4, 3.55, '中性基准3.5', fontsize=8.5, color='gray')
-ax.set_title('图8  各构念量表得分分布（小提琴图+箱形图，n=300）',
+ax.set_title(f'图8  各构念量表得分分布（小提琴图+箱形图，n={N}）',
              fontsize=13, fontweight='bold', pad=10)
 ax.spines[['top','right']].set_visible(False)
 from matplotlib.lines import Line2D
@@ -452,4 +417,4 @@ ax.legend(handles=[
 plt.tight_layout()
 save(fig, 'fig8_violin')
 
-print('\n全部图表（图1-8）已更新至 charts/（基于N=300新数据）')
+print(f'\n全部图表（图1-8）已更新至 charts/（基于N={N}数据，{DATA_FILE}）')

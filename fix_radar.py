@@ -17,7 +17,8 @@ rcParams['axes.unicode_minus'] = False
 
 os.makedirs('charts', exist_ok=True)
 
-df = pd.read_csv('survey_300_clean.csv')
+DATA_FILE = os.environ.get('SURVEY_DATA', 'survey_clean.csv')
+df = pd.read_csv(DATA_FILE)
 N  = len(df)
 
 CONSTRUCTS = {
@@ -128,7 +129,7 @@ for ax in [ax1, ax2]:
     ax.text(0, 3.72, '3.5', ha='center', fontsize=7.5, color='#999',
             transform=ax.transData)
 
-fig.suptitle('图5  九大构念量表均值双组对比雷达图（n=300，Likert 1—5分）',
+fig.suptitle(f'图5  九大构念量表均值双组对比雷达图（n={N}，Likert 1—5分）',
              fontsize=14, fontweight='bold', y=1.01)
 plt.tight_layout(pad=3.0)
 

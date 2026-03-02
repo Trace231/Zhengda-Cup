@@ -43,6 +43,8 @@ Z世代天津线下观演调研 — 合成问卷数据生成脚本
         --seed 42
 """
 
+from __future__ import annotations
+
 import random
 import json
 import time
@@ -119,16 +121,109 @@ INCOME_BY_RESIDENCE: dict[str, list[tuple[str, float]]] = {
 
 # 常住地不再使用先验：天津 only 时仅天津；非天津 only 时按「抽中的群」随机抽样（整群时为 6 天津区 + 6 省共 7 群等权，非整群时为三档等权）
 
+# ============================================================
+# § Q1 先验：观演经历次数（按常住地分层条件概率）
+# 数据依据：后浪研究所《2025年轻人演唱会报告》约20%年轻人没看过演唱会；
+#          中国青年报·中青校媒（N=1301, 2025）约25%从未看过任何演出；
+#          艾媒咨询《2024演唱会消费者洞察》年均3.5场、近半数年观3-4次；
+#          天津本地因无出行成本，"从未有过"比例明显低于外地；
+#          注：Q1 为终身累计次数，非年度频次。
+# ============================================================
+Q1_PRIOR_BY_RESIDENCE: dict[str, list[tuple[str, float]]] = {
+    "天津本地":     [("从未有过", 0.12), ("1-3次", 0.45), ("4-6次", 0.25), ("7次及以上", 0.18)],
+    "京津冀近途":  [("从未有过", 0.18), ("1-3次", 0.46), ("4-6次", 0.22), ("7次及以上", 0.14)],
+    "中程较近":    [("从未有过", 0.22), ("1-3次", 0.44), ("4-6次", 0.20), ("7次及以上", 0.14)],
+    "其他省份远途": [("从未有过", 0.28), ("1-3次", 0.43), ("4-6次", 0.18), ("7次及以上", 0.11)],
+}
+
+# ============================================================
+# § Q1 年龄微调乘数（与常住地先验相乘后归一化）
+# 数据依据：后浪研究所《2025年轻人演唱会报告》17-21岁首次观演比例偏高；
+#          艾媒《2024演唱会消费者洞察》27-31岁终身累计次数均值约为17-21岁的2.2倍；
+#          22-26岁作为基准（乘数=1.0）。
+# ============================================================
+Q1_AGE_NUDGE: dict[str, dict[str, float]] = {
+    "17-21岁": {"从未有过": 1.25, "1-3次": 1.10, "4-6次": 0.80, "7次及以上": 0.55},
+    "22-26岁": {"从未有过": 1.00, "1-3次": 1.00, "4-6次": 1.00, "7次及以上": 1.00},
+    "27-31岁": {"从未有过": 0.70, "1-3次": 0.90, "4-6次": 1.20, "7次及以上": 1.60},
+}
+
+# ============================================================
+# § 收入年龄微调乘数
+# 数据依据：国家统计局2024年城镇青年收入调查；
+#          17-21岁以学生/兼职为主，家庭月零花钱/实习工资集中在 1000-3000 元；
+#          27-31岁在职人员收入重心上移，高收入档(6000+)比例显著更高。
+# ============================================================
+INCOME_AGE_NUDGE: dict[str, dict[str, float]] = {
+    "17-21岁": {
+        "1000元及以下": 2.50,  # 高中生/大一大二零花钱多
+        "1001-3000元":  1.50,
+        "3001-6000元":  0.40,
+        "6001-10000元": 0.10,  # 极少数实习/兼职高薪
+        "10000元以上":  0.05,
+    },
+    "22-26岁": {  # 基准，不调整
+        "1000元及以下": 1.00,
+        "1001-3000元":  1.00,
+        "3001-6000元":  1.00,
+        "6001-10000元": 1.00,
+        "10000元以上":  1.00,
+    },
+    "27-31岁": {
+        "1000元及以下": 0.40,
+        "1001-3000元":  0.70,
+        "3001-6000元":  1.20,
+        "6001-10000元": 1.60,
+        "10000元以上":  1.80,
+    },
+}
+
+# ============================================================
+# § Q3 先验：有无长期偶像（与居住地相对独立）
+# 数据依据：艾媒《中国Z世代养成系偶像认知及追星行为调研2024》；
+#          36氪《粉丝经济下的用户行为观察》：有专属偶像约50-55%；
+#          结合本研究"天津演唱会情境"样本略偏粉丝，有偶像比例取58%左右。
+# ============================================================
+Q3_PRIOR = [
+    ("无",       0.42),
+    ("1位",      0.32),
+    ("2-3位",    0.22),
+    ("4位及以上", 0.04),
+]
+
+# ============================================================
+# § Q2 先验：之后是否有观演计划（按 concert_freq × social_drive 条件概率）
+# 数据依据：《中国演唱会市场消费白皮书2024》73%的演唱会消费者计划年内再度观演；
+#          CNNIC《中国互联网络发展状况统计报告》Z世代线上演出消费意愿；
+#          非观演者中"价格敏感犹豫"群体约42%表示有潜在计划（中青校媒2025）。
+# ============================================================
+Q2_PRIOR_BY_FREQ_DRIVE: dict[str, list[tuple[str, float]]] = {
+    # 已有观演经历：频次越高，再次计划意愿越强
+    "1-3次":      [("有", 0.68), ("暂时不确定", 0.27), ("否", 0.05)],
+    "4-6次":      [("有", 0.80), ("暂时不确定", 0.17), ("否", 0.03)],
+    "7次及以上":  [("有", 0.88), ("暂时不确定", 0.10), ("否", 0.02)],
+    # 非观演者：按社交驱动类型区分意愿
+    "价格敏感犹豫":  [("有", 0.42), ("暂时不确定", 0.45), ("否", 0.13)],
+    "潜在兴趣探索":  [("有", 0.28), ("暂时不确定", 0.48), ("否", 0.24)],
+    "演出无感":      [("有", 0.05), ("暂时不确定", 0.22), ("否", 0.73)],
+}
 
 # ============================================================
 # § 内在条件概率 P(I|E)
 # ============================================================
 
-# 社交驱动 × 年龄
+# 社交驱动 × 年龄（适用于 concert_freq != "从未有过" 的观演者）
 SOCIAL_DRIVE_BY_AGE: dict[str, list] = {
     "17-21岁": [("饭圈打卡", 0.50), ("精致出片", 0.35), ("解压放松", 0.15)],
     "22-26岁": [("饭圈打卡", 0.30), ("精致出片", 0.40), ("解压放松", 0.30)],
     "27-31岁": [("饭圈打卡", 0.10), ("精致出片", 0.20), ("解压放松", 0.70)],
+}
+
+# 非观演者社交驱动 × 年龄（concert_freq="从未有过" 时使用，解释其未观演的心理原因）
+SOCIAL_DRIVE_NON_ATTENDER_BY_AGE: dict[str, list] = {
+    "17-21岁": [("价格敏感犹豫", 0.55), ("潜在兴趣探索", 0.35), ("演出无感", 0.10)],
+    "22-26岁": [("价格敏感犹豫", 0.40), ("潜在兴趣探索", 0.30), ("演出无感", 0.30)],
+    "27-31岁": [("价格敏感犹豫", 0.20), ("潜在兴趣探索", 0.15), ("演出无感", 0.65)],
 }
 
 # 消费偏好 × 收入
@@ -362,7 +457,8 @@ def generate_persona(tianjin_only: bool = False) -> dict:
     Returns
     -------
     dict
-        包含外在人口属性（gender / age_occ_group / occupation / income / residence_*）
+        包含外在人口属性（gender / age_occ_group / occupation / income / residence_*）、
+        行为属性（concert_freq / has_idol_count）
         与内在心理动机（social_drive / consumption_pref / interaction_obsession / tourism_energy）。
     """
     # --- 外在属性：先验与常住地 ---
@@ -381,31 +477,63 @@ def generate_persona(tianjin_only: bool = False) -> dict:
         # 非天津 only 且未整群：四档等权抽一档，再在该档内随机抽
         residence = random.choice(["天津本地", "京津冀近途", "中程较近", "其他省份远途"])
         residence_detail = random.choice(pool[residence])
-    # 收入与城市相关：按常住地类型抽样
-    income = _weighted_choice(INCOME_BY_RESIDENCE[residence])
 
-    # --- 内在属性：条件采样 ---
-    social_drive         = _weighted_choice(SOCIAL_DRIVE_BY_AGE[age_occ])
-    consumption_pref     = _weighted_choice(CONSUMPTION_PREF_BY_INCOME[income])
+    # 收入按「常住地 × 年龄」联合采样：先取居住地基础分布，再乘年龄微调后归一化
+    _base_inc = dict(INCOME_BY_RESIDENCE[residence])
+    _nudge_inc = INCOME_AGE_NUDGE[age_occ]
+    _blended_inc = {k: _base_inc[k] * _nudge_inc[k] for k in _base_inc}
+    _total_inc = sum(_blended_inc.values())
+    _inc_probs = [(k, v / _total_inc) for k, v in _blended_inc.items()]
+    income = _weighted_choice(_inc_probs)
+
+    # --- P1 修复：观演经历（Q1）按常住地先验 × 年龄微调混合采样 ---
+    # 先从居住地基础先验取权重，再乘以年龄微调乘数，归一化后抽样
+    _base_q1 = dict(Q1_PRIOR_BY_RESIDENCE[residence])
+    _nudge_q1 = Q1_AGE_NUDGE[age_occ]
+    _blended = {k: _base_q1[k] * _nudge_q1[k] for k in _base_q1}
+    _total = sum(_blended.values())
+    _q1_probs = [(k, v / _total) for k, v in _blended.items()]
+    concert_freq = _weighted_choice(_q1_probs)
+
+    # --- P3 修复：有无长期偶像（Q3）按独立先验采样，不再由 LLM 自由填写 ---
+    has_idol_count = _weighted_choice(Q3_PRIOR)
+
+    # --- P4 修复：内在属性依 concert_freq 条件采样 ---
+    # 非观演者使用专属社交驱动池（描述其未观演的心理原因），避免人设语义暗示"已去过"
+    if concert_freq == "从未有过":
+        social_drive = _weighted_choice(SOCIAL_DRIVE_NON_ATTENDER_BY_AGE[age_occ])
+    else:
+        social_drive = _weighted_choice(SOCIAL_DRIVE_BY_AGE[age_occ])
+
+    # --- P2 修复：未来观演计划（Q2）按 concert_freq / social_drive 条件采样 ---
+    if concert_freq == "从未有过":
+        q2_plan = _weighted_choice(Q2_PRIOR_BY_FREQ_DRIVE[social_drive])
+    else:
+        q2_plan = _weighted_choice(Q2_PRIOR_BY_FREQ_DRIVE[concert_freq])
+
+    consumption_pref      = _weighted_choice(CONSUMPTION_PREF_BY_INCOME[income])
     interaction_obsession = _weighted_choice(INTERACTION_BY_GENDER[gender])
-    tourism_energy       = _weighted_choice(_get_tourism_energy_probs(residence, age_occ))
+    tourism_energy        = _weighted_choice(_get_tourism_energy_probs(residence, age_occ))
 
     # --- 具体职业细化 ---
     occ_pool, occ_weights = _OCCUPATION_POOL[age_occ]
     occupation = random.choices(occ_pool, weights=occ_weights, k=1)[0]
 
     return {
-        "gender":               gender,
-        "age_range":            _AGE_RANGE_LABEL[age_occ],
-        "age_occ_group":        age_occ,
-        "occupation":           occupation,
-        "income":               income,
-        "residence_type":       residence,
-        "residence_detail":     residence_detail,
-        "social_drive":         social_drive,
-        "consumption_pref":     consumption_pref,
+        "gender":                gender,
+        "age_range":             _AGE_RANGE_LABEL[age_occ],
+        "age_occ_group":         age_occ,
+        "occupation":            occupation,
+        "income":                income,
+        "residence_type":        residence,
+        "residence_detail":      residence_detail,
+        "concert_freq":          concert_freq,        # 对应 Q1，由先验决定
+        "q2_plan":               q2_plan,             # 对应 Q2，由条件先验决定
+        "has_idol_count":        has_idol_count,      # 对应 Q3，由先验决定
+        "social_drive":          social_drive,
+        "consumption_pref":      consumption_pref,
         "interaction_obsession": interaction_obsession,
-        "tourism_energy":       tourism_energy,
+        "tourism_energy":        tourism_energy,
     }
 
 
@@ -414,9 +542,23 @@ def generate_persona(tianjin_only: bool = False) -> dict:
 # ============================================================
 
 _SOCIAL_DRIVE_DESC = {
-    "饭圈打卡": "你是资深粉丝，把去现场视为对爱豆的忠诚表达，极度在意应援仪式感和粉丝社群认同",
-    "精致出片": "你热爱生活美学记录，把演出现场当成出片圣地，注重视觉体验和社交分享",
-    "解压放松": "你把线下演出当作逃离日常压力的出口，更注重情绪释放与沉浸式氛围体验",
+    # ── 观演者类型（concert_freq != "从未有过" 时使用）──────────────────────────
+    "饭圈打卡":   "你是资深粉丝，把去现场视为对爱豆的忠诚表达，极度在意应援仪式感和粉丝社群认同",
+    "精致出片":   "你热爱生活美学记录，把演出现场当成出片圣地，注重视觉体验和社交分享",
+    "解压放松":   "你把线下演出当作逃离日常压力的出口，更注重情绪释放与沉浸式氛围体验",
+    # ── 非观演者类型（concert_freq="从未有过" 时使用，描述未观演的心理原因）──────
+    "价格敏感犹豫": (
+        "你对演唱会有兴趣，甚至有过想去看的冲动，但每次都因门票太贵、抢票太难或时间/精力"
+        "不足而最终未能成行；你有潜在意愿，但现实阻力让你止步于「想去但没去」的状态"
+    ),
+    "潜在兴趣探索": (
+        "你对线下演出保持开放好奇的态度，偶尔关注演出资讯；还没有遇到足够吸引你下定决心"
+        "买票的演出，属于「条件合适就会踏出第一步」的潜在消费者"
+    ),
+    "演出无感": (
+        "你对线下演唱会或大型演出没有特别兴趣，更享受线上追内容或其他休闲方式；"
+        "演出在你眼中性价比不高，不在你主动规划的消费清单里"
+    ),
 }
 _CONSUMPTION_DESC = {
     "抠门陪伴党": "消费上偏向节俭，优先选择基础票档，但情感上非常渴望亲临现场，会精打细算压缩非核心开支",
@@ -434,45 +576,166 @@ _ENERGY_DESC = {
 }
 
 
-# 固定尾部：角色扮演要求 + 输出格式（与是否重写人设无关）
-_SYSTEM_PROMPT_TAIL = """
-【角色扮演要求】
-请完全代入上述人设，以第一人称视角，基于你的收入水平、生活状态和心理动机，
-真实填写以下"Z世代天津线下观演调研"问卷。你的回答必须与人设逻辑高度自洽，
-不可与收入层级、职业现实和核心动机产生明显矛盾。
-特别地，「情感体验动机」相关题目（亲临现场的满足感、临场感与真实感、释放压力与情绪充电）
-测量的是同一维度，请保持态度一致，均围绕"现场观演带来的情感价值"在 1–5 之间给出连贯评分。
+def _build_system_prompt_tail(is_non_attender: bool, q2_plan: str, social_drive: str) -> str:
+    """
+    根据观演状态动态生成系统提示词尾部。
+    量表填写指引放在此处而非人设描述里，以确保即使 LLM 重写了人设，这部分指引仍完整注入。
+    """
+    if is_non_attender:
+        # 非观演者：量表指引以「想象/假设」为基调，并与 Q2 计划对齐
+        if social_drive == "演出无感":
+            s4_guide = (
+                "Scale_4（情感体验动机）：你对演唱会没有特别兴趣，请以「如果去了会怎么感受」的"
+                "想象视角作答，整体给低分（1-2 分）。"
+            )
+            s156_guide = (
+                "Scale_1（社会信息影响）、Scale_5（群体归属）、Scale_6（仪式参与）：同样以低兴趣"
+                "视角作答，整体偏低（1-2 分）。"
+            )
+        else:
+            s4_guide = (
+                "Scale_4（情感体验动机）：你从未亲历现场，请根据对线下演出的「想象预期」作答，"
+                "给中等偏低分（2-3 分）。"
+            )
+            s156_guide = (
+                "Scale_1（社会信息影响）、Scale_5（群体归属）、Scale_6（仪式参与）：以潜在消费者"
+                "视角，若对演出有一定好奇则 2-3 分，若兴趣不浓则 1-2 分。"
+            )
 
-【输出格式要求】
-严格输出一个合法的 JSON 对象，键名与题号完全一致，不得在 JSON 之外输出任何文字或解释。"""
+        if q2_plan == "有":
+            s89_guide = "Scale_8（行为意向）、Scale_9（消费意向）：你有计划去看，整体给较高分（3-5 分）。"
+        elif q2_plan == "否":
+            s89_guide = "Scale_8（行为意向）、Scale_9（消费意向）：你没有计划去看，整体给低分（1-2 分）。"
+        else:
+            s89_guide = "Scale_8（行为意向）、Scale_9（消费意向）：你尚未确定，给中等分（2-3 分）。"
+
+        scale_note = (
+            "\n【量表填写要点（非观演者）】\n"
+            f"- {s4_guide}\n"
+            f"- {s156_guide}\n"
+            f"- {s89_guide}\n"
+            "- 其余量表（Scale_2 偶像认同、Scale_3 文旅吸引、Scale_7 感知成本）请按你的人设逻辑作答。\n"
+        )
+    else:
+        # 观演者：原有指引，强调 Scale_4 内部一致性
+        scale_note = (
+            "\n【量表填写要点】\n"
+            "- Scale_4（情感体验动机）测量同一维度（满足感/临场感/情绪释放），请保持态度一致，"
+            "均围绕「现场观演带来的情感价值」在 1-5 之间给出连贯评分。\n"
+        )
+
+    role_play = (
+        "\n【角色扮演要求】\n"
+        "请完全代入上述人设，以第一人称视角，基于你的收入水平、生活状态和心理动机，\n"
+        "真实填写以下\u201cZ世代天津线下观演调研\u201d问卷。你的回答必须与人设逻辑高度自洽，\n"
+        "不可与收入层级、职业现实和核心动机产生明显矛盾。\n"
+        "\n【输出格式要求】\n"
+        "严格输出一个合法的 JSON 对象，键名与题号完全一致，不得在 JSON 之外输出任何文字或解释。"
+    )
+    return scale_note + role_play
+
+# 动态硬约束模板（由 build_system_prompt 格式化后拼入系统提示词最前）
+_CONSTRAINT_TEMPLATE = """\n【数据硬约束（不可违反，否则数据无效）】
+- Q1 答案必须严格填写："{concert_freq}"（已由抽样系统根据总体分布决定，不可更改）
+- Q2 答案必须严格填写："{q2_plan}"（已由条件先验根据观演经历与心理动机决定，不可更改）
+- Q3 答案必须严格填写："{has_idol_count}"（已由抽样系统决定，不可更改）
+"""
 
 
 def _get_persona_description_only(persona: dict) -> str:
-    """仅返回人设描述正文（供 LLM 重写用），不含角色扮演要求与输出格式。"""
-    return f"""你是一名{persona['gender']}生，年龄段为{persona['age_range']}，
-职业是{persona['occupation']}，月可支配收入为{persona['income']}，
-常住地为{persona['residence_detail']}（属于"{persona['residence_type']}"群体）。
+    """仅返回人设描述正文（供 LLM 重写用），不含角色扮演要求与输出格式。
+    根据 concert_freq 区分"观演者"与"非观演者"两套描述体系，避免语义隐含错误的观演状态。
+    """
+    concert_freq   = persona.get("concert_freq", "1-3次")
+    has_idol_count = persona.get("has_idol_count", "无")
+    is_non_attender = (concert_freq == "从未有过")
 
-【你的核心性格与动机】
-- 社交驱动类型：{_SOCIAL_DRIVE_DESC[persona['social_drive']]}
-- 消费偏好类型：{_CONSUMPTION_DESC[persona['consumption_pref']]}
-- 互动执念程度：{_INTERACTION_DESC[persona['interaction_obsession']]}
-- 文旅精力状态：{_ENERGY_DESC[persona['tourism_energy']]}"""
+    base = (
+        f"你是一名{persona['gender']}生，年龄段为{persona['age_range']}，\n"
+        f"职业是{persona['occupation']}，月可支配收入为{persona['income']}，\n"
+        f"常住地为{persona['residence_detail']}（属于\"{persona['residence_type']}\"群体）。"
+    )
+
+    if is_non_attender:
+        # ── 非观演者人设：描述其"从未观演"的状态与原因 ─────────────────────────
+        if has_idol_count != "无":
+            idol_clause = f"你有{has_idol_count}位长期支持的偶像，但从未有过线下观演的经历"
+        else:
+            idol_clause = "你目前没有特别追随的偶像，也从未有过线下观演的经历"
+
+        # 非观演者的消费偏好描述用假设性语义，反映"如果去了会怎么花钱"
+        _NON_ATTENDER_CONSUMPTION_DESC = {
+            "抠门陪伴党": "如果真的去看演唱会，你会优先选最便宜的基础票档，尽量压缩总花费",
+            "理性消费者": "如果真的去看演唱会，你会综合性价比选择中档票位，愿意为有价值的体验适当加价",
+            "极致前排控": "如果真的去看演唱会，你会毫不犹豫选择最佳视角的高端票位，追求极致体验",
+        }
+        consumption_desc = _NON_ATTENDER_CONSUMPTION_DESC[persona["consumption_pref"]]
+
+        body = (
+            f"\n\n【你的核心性格与观演态度】\n"
+            f"- 观演状态与背景：{idol_clause}\n"
+            f"- 你的非观演特质：{_SOCIAL_DRIVE_DESC[persona['social_drive']]}\n"
+            f"- 假设消费倾向（如果去）：{consumption_desc}\n"
+            f"- 文旅精力状态：{_ENERGY_DESC[persona['tourism_energy']]}"
+        )
+        return base + body
+    else:
+        # ── 观演者人设：描述其已有的观演背景与动机 ──────────────────────────────
+        if has_idol_count != "无":
+            idol_clause = (
+                f"你有{has_idol_count}长期支持的偶像，已有{concert_freq}的线下观演经历"
+            )
+        else:
+            idol_clause = (
+                f"你没有特别固定追随的偶像，但已有{concert_freq}的线下观演经历，是泛演出爱好者"
+            )
+        return (
+            base + f"\n\n【你的核心性格与动机】\n"
+            f"- 观演背景：{idol_clause}\n"
+            f"- 社交驱动类型：{_SOCIAL_DRIVE_DESC[persona['social_drive']]}\n"
+            f"- 消费偏好类型：{_CONSUMPTION_DESC[persona['consumption_pref']]}\n"
+            f"- 互动执念程度：{_INTERACTION_DESC[persona['interaction_obsession']]}\n"
+            f"- 文旅精力状态：{_ENERGY_DESC[persona['tourism_energy']]}"
+        )
 
 
 def build_system_prompt(persona: dict) -> str:
     """
     将画像字典转化为极具代入感的角色扮演指令，
     让 LLM 以该人设的逻辑和情感填写问卷。
+    硬约束（Q1/Q2/Q3）+ 量表指引均在 persona 描述之后注入，不经过重写器，保证完整性。
     """
-    return (_get_persona_description_only(persona) + _SYSTEM_PROMPT_TAIL).strip()
+    is_non_attender = (persona["concert_freq"] == "从未有过")
+    constraint = _CONSTRAINT_TEMPLATE.format(
+        concert_freq=persona["concert_freq"],
+        q2_plan=persona["q2_plan"],
+        has_idol_count=persona["has_idol_count"],
+    )
+    tail = _build_system_prompt_tail(
+        is_non_attender=is_non_attender,
+        q2_plan=persona["q2_plan"],
+        social_drive=persona["social_drive"],
+    )
+    return (_get_persona_description_only(persona) + constraint + tail).strip()
 
 
-def build_system_prompt_from_rewritten(rewritten_persona_text: str) -> str:
+def build_system_prompt_from_rewritten(rewritten_persona_text: str, persona: dict) -> str:
     """
     用「LLM 重写后的人设正文」组装完整的 system prompt（重写只改表述，不改含义）。
+    量表指引和硬约束均在重写文本之后新鲜注入，不依赖重写器保留。
     """
-    return (rewritten_persona_text.strip() + _SYSTEM_PROMPT_TAIL).strip()
+    is_non_attender = (persona["concert_freq"] == "从未有过")
+    constraint = _CONSTRAINT_TEMPLATE.format(
+        concert_freq=persona["concert_freq"],
+        q2_plan=persona["q2_plan"],
+        has_idol_count=persona["has_idol_count"],
+    )
+    tail = _build_system_prompt_tail(
+        is_non_attender=is_non_attender,
+        q2_plan=persona["q2_plan"],
+        social_drive=persona["social_drive"],
+    )
+    return (rewritten_persona_text.strip() + constraint + tail).strip()
 
 
 # 用于 LLM 重写人设的指令（不改变含义，仅换一种说法，减少模板感）
@@ -739,6 +1002,7 @@ def _flatten_record(persona: dict, llm_answers: dict) -> dict:
     将 LLM 返回的 JSON 与画像元数据合并为一条 DataFrame 行。
     - 多选题（list 类型）以竖线 '|' 拼接为字符串
     - Q11.x 人口统计题直接由 persona 覆盖，保证数据一致性
+    - Q1（观演经历）和 Q3（有无偶像）同样由 persona 硬覆盖，防止 LLM 破坏先验分布
     - 以 '_meta_' 前缀字段保留画像动机标签，便于后续验证
     """
     record: dict = {}
@@ -747,11 +1011,27 @@ def _flatten_record(persona: dict, llm_answers: dict) -> dict:
         record[key] = "|".join(str(v) for v in val) if isinstance(val, list) else val
 
     # 人口统计题：由 persona 直接决定，避免 LLM 幻觉
-    record["Q11_1_gender"]    = persona["gender"]
-    record["Q11_2_age_range"] = persona["age_range"]
+    record["Q11_1_gender"]     = persona["gender"]
+    record["Q11_2_age_range"]  = persona["age_range"]
     record["Q11_3_occupation"] = persona["occupation"]
-    record["Q11_4_income"]    = persona["income"]
-    record["Q11_5_residence"] = persona["residence_detail"]
+    record["Q11_4_income"]     = persona["income"]
+    record["Q11_5_residence"]  = persona["residence_detail"]
+
+    # 关键行为题：强制覆盖，确保与先验分布一致（P1/P2/P3 修复）
+    record["Q1"] = persona["concert_freq"]    # 观演经历次数
+    record["Q2"] = persona["q2_plan"]         # 未来观演计划
+    record["Q3"] = persona["has_idol_count"]  # 有无长期偶像
+
+    # Q5/Q6/Q7 级联空值：Q1="从未有过" 者无观演行为数据
+    if persona["concert_freq"] == "从未有过":
+        record["Q5"] = None
+        record["Q6"] = None
+        record["Q7"] = None
+
+    # Q4/Q8 级联空值：Q3="无" 者无偶像消费数据
+    if persona["has_idol_count"] == "无":
+        record["Q4"] = None
+        record["Q8"] = None
 
     # 画像动机元数据
     record["_meta_social_drive"]          = persona["social_drive"]
@@ -759,6 +1039,141 @@ def _flatten_record(persona: dict, llm_answers: dict) -> dict:
     record["_meta_interaction_obsession"] = persona["interaction_obsession"]
     record["_meta_tourism_energy"]        = persona["tourism_energy"]
     record["_meta_residence_type"]        = persona["residence_type"]
+    record["_meta_concert_freq"]          = persona["concert_freq"]
+    record["_meta_q2_plan"]               = persona["q2_plan"]
+    record["_meta_has_idol_count"]        = persona["has_idol_count"]
+
+    return record
+
+
+# ============================================================
+# § 模块四A：人类噪声注入（模拟「清洗后仍残留」的自然误差）
+# ============================================================
+
+# 27 道量表题列名（Scale_1_1 ~ Scale_9_3）
+_SCALE_ITEM_COLS: list[str] = [
+    f"Scale_{d}_{i}" for d in range(1, 10) for i in range(1, 4)
+]
+
+# Conjoint 选项全集（用于替换为「非理性」选项）
+_CONJOINT_OPTIONS_MAP: dict[str, list[str]] = {
+    "Q10_1": [
+        "A: 380元（普通看台）+ 无互动 + 无文旅服务",
+        "B: 680元（优选看台）+ 轻度互动（上大屏）+ 双景点&酒店8折",
+        "C: 1280元（内场）+ 深度互动（点歌）+ 单景点票",
+        "均不购买",
+    ],
+    "Q10_2": [
+        "A: 380元（普通看台）+ 轻度互动（上大屏）+ 单景点票",
+        "B: 680元（优选看台）+ 深度互动（点歌）+ 无文旅服务",
+        "C: 1280元（内场）+ 无互动 + 双景点&酒店8折",
+        "均不购买",
+    ],
+    "Q10_3": [
+        "A: 380元（普通看台）+ 深度互动（点歌）+ 双景点&酒店8折",
+        "B: 680元（优选看台）+ 无互动 + 单景点票",
+        "C: 1280元（内场）+ 轻度互动（上大屏）+ 无文旅服务",
+        "均不购买",
+    ],
+}
+
+# 噪声档位参数
+# p_universal    : 每道量表题随机 ±1 的概率（所有档位都施加，代表手滑/理解误差）
+# p_acquiescence : 顺从偏误触发概率（整体量表 +1，常见于低分辨率作答者）
+# p_fatigue      : 疲劳效应触发概率（Scale_7-9 向中间值 3 收拢）
+# p_conjoint     : 每道 Conjoint 题选非最优选项的概率（认知超载导致随机化）
+# 注：acquiescence 与 fatigue 互斥；"realistic" 对应清洗后留存的认真但不完美的答卷。
+_NOISE_PROFILES: dict[str, dict[str, float]] = {
+    "none":      {"p_universal": 0.00, "p_acquiescence": 0.00, "p_fatigue": 0.00, "p_conjoint": 0.00},
+    "mild":      {"p_universal": 0.10, "p_acquiescence": 0.05, "p_fatigue": 0.08, "p_conjoint": 0.08},
+    "realistic": {"p_universal": 0.20, "p_acquiescence": 0.10, "p_fatigue": 0.13, "p_conjoint": 0.15},
+}
+
+
+def _inject_response_noise(record: dict, noise_level: str = "realistic") -> dict:
+    """
+    模拟「数据清洗后残留的不可消除人类误差」，注入真实认真答题者的自然偏差。
+
+    注意：本函数【不】生成会被质量筛查剔除的极端噪声（直线作答 / 纯随机答卷），
+    只保留清洗后仍留存的三类系统性偏差：
+
+    1. 全局随机扰动（所有人）：每道量表题以 p_universal 概率偏移 ±1
+       → 模拟手滑、语义理解误差、心情波动等不可避免的测量误差
+    2. 顺从偏误（Acquiescence, 约10%）：全部量表 +1（cap 5）
+       → 模拟"看到题目倾向于同意"的系统性正向偏移
+       → 对 Scale_7（感知成本障碍）尤其有失真效果（本应低但被抬高）
+    3. 疲劳效应（Fatigue, 约13%）：Scale_7-9 向 3 收拢
+       → 模拟后半段量表注意力下降、趋中心化的规律
+    4. Conjoint 认知噪声（所有人）：Q10 各题有 p_conjoint 概率偏离最优选项
+       → 模拟多属性权衡过程中的认知超载与随机选择
+
+    Parameters
+    ----------
+    record     : _flatten_record() 的输出字典（已含硬约束覆盖）
+    noise_level: "none" | "mild" | "realistic"
+
+    Returns
+    -------
+    加入噪声后的记录字典（新字典，不修改原始）
+    """
+    if noise_level == "none":
+        record = dict(record)
+        record["_meta_noise_profile"] = "none"
+        return record
+
+    cfg = _NOISE_PROFILES[noise_level]
+    record = dict(record)
+
+    # ── 分配噪声档位（互斥：acquiescence / fatigue / careful）──────────────────
+    r = random.random()
+    if r < cfg["p_acquiescence"]:
+        profile = "acquiescence"
+    elif r < cfg["p_acquiescence"] + cfg["p_fatigue"]:
+        profile = "fatigue"
+    else:
+        profile = "careful"
+    record["_meta_noise_profile"] = profile
+
+    # ── 1. 全局随机扰动（所有人，施加在档位特异性噪声之前）──────────────────────
+    for col in _SCALE_ITEM_COLS:
+        v = record.get(col)
+        if v is None or not isinstance(v, (int, float)):
+            continue
+        if random.random() < cfg["p_universal"]:
+            # 以 60/40 偏正向偏移（轻微顺从趋势），而非对称 ±1
+            delta = +1 if random.random() < 0.55 else -1
+            record[col] = int(max(1, min(5, int(v) + delta)))
+
+    # ── 2. 顺从偏误：整体 +1（cap 5），特别影响 Scale_7 负向措辞题 ──────────────
+    if profile == "acquiescence":
+        for col in _SCALE_ITEM_COLS:
+            v = record.get(col)
+            if v is None or not isinstance(v, (int, float)):
+                continue
+            record[col] = int(min(5, int(v) + 1))
+
+    # ── 3. 疲劳效应：Scale_7/8/9 向 3 收拢（50% 概率每题收一格）──────────────────
+    elif profile == "fatigue":
+        fatigue_cols = [f"Scale_{d}_{i}" for d in (7, 8, 9) for i in (1, 2, 3)]
+        for col in fatigue_cols:
+            v = record.get(col)
+            if v is None or not isinstance(v, (int, float)):
+                continue
+            if random.random() < 0.50:
+                v_int = int(v)
+                if v_int > 3:
+                    record[col] = v_int - 1
+                elif v_int < 3:
+                    record[col] = v_int + 1
+                # v == 3 保持不变
+
+    # ── 4. Conjoint 认知噪声：以 p_conjoint 偏离最优选项 ──────────────────────────
+    for qcol, options in _CONJOINT_OPTIONS_MAP.items():
+        if random.random() < cfg["p_conjoint"]:
+            current = record.get(qcol)
+            others = [o for o in options if o != current]
+            if others:
+                record[qcol] = random.choice(others)
 
     return record
 
@@ -794,6 +1209,14 @@ def main() -> None:
                         help="先用 LLM 重写人设再填问卷，减少模板感（默认开启）")
     parser.add_argument("--no-rewrite-persona", dest="rewrite_persona", action="store_false",
                         help="关闭人设重写，直接使用模板人设填问卷")
+    parser.add_argument("--noise-level", dest="noise_level", default="realistic",
+                        choices=["none", "mild", "realistic"],
+                        help=(
+                            "注入人类噪声的强度（模拟清洗后留存的自然误差）。"
+                            " none=不注入（纯 LLM 输出）；"
+                            " mild=轻度（敏感性分析用）；"
+                            " realistic=真实强度（默认，含顺从偏误/疲劳/随机扰动）"
+                        ))
     parser.add_argument("--tianjin-only", dest="tianjin_only", action="store_true", default=False,
                         help="仅生成天津样本：常住地限为天津本地，地址从天津市内区中随机")
     parser.add_argument("--tianjin-ratio", type=float, default=None, metavar="P",
@@ -898,7 +1321,12 @@ def main() -> None:
         persona = generate_persona(tianjin_only=tianjin_this)
         if args.rewrite_persona:
             rewritten = rewrite_persona_with_llm(client, persona, model=args.model)
-            system_prompt = build_system_prompt_from_rewritten(rewritten) if rewritten else build_system_prompt(persona)
+            # 传入 persona 以注入 Q1/Q3 硬约束
+            system_prompt = (
+                build_system_prompt_from_rewritten(rewritten, persona)
+                if rewritten
+                else build_system_prompt(persona)
+            )
         else:
             system_prompt = build_system_prompt(persona)
         llm_answers = call_llm_api(client, system_prompt, model=args.model)
@@ -909,14 +1337,17 @@ def main() -> None:
             continue
 
         record = _flatten_record(persona, llm_answers)
+        record = _inject_response_noise(record, noise_level=args.noise_level)
         records.append(record)
         success_count += 1
         # 每成功一条即写入，崩溃或中断后可用 --resume 继续
         _save_progress(args.output, existing_records, records)
 
+        noise_tag = record.get("_meta_noise_profile", "—")
         logger.info(
             f"  → 成功 ✓ | 画像: {persona['gender']} / {persona['age_occ_group']} / "
-            f"{persona['income']} / {persona['consumption_pref']}"
+            f"{persona['income']} / Q1={persona['concert_freq']} / Q2={persona['q2_plan']} / "
+            f"Q3={persona['has_idol_count']} / {persona['social_drive']} | 噪声: {noise_tag}"
         )
 
         if i < n_to_generate:
